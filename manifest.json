@@ -1,0 +1,11 @@
+{
+	"id": "notes-hub",
+	"name": "Notes Hub",
+	"version": "0.1.0",
+	"minAppVersion": "1.6.6",
+	"description": "Browse, download, and publish knowledge packages shared by the community.",
+	"author": "stihi",
+	"authorUrl": "https://appflowly.com",
+	"fundingUrl": "https://ko-fi.com/adigorn",
+	"isDesktopOnly": false
+}

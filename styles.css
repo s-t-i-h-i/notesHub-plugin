@@ -1,0 +1,199 @@
+/* Obsidian's default modal width is cramped for a card grid or a form with
+   long labels. A dedicated class beats the base .modal rule on specificity
+   without an !important. */
+.marketplace-modal.modal {
+	width: min(720px, 92vw);
+}
+
+/* Publish form fields: label above the control, control stretched full
+   width - Obsidian's default Setting row is a name/control two-column
+   split, which turns a description textarea into a cramped sliver. */
+.setting-item.marketplace-wide-field {
+	flex-direction: column;
+	align-items: stretch;
+	gap: var(--size-2-2);
+}
+
+.marketplace-wide-field .setting-item-control {
+	width: 100%;
+}
+
+.marketplace-wide-field input[type='text'],
+.marketplace-wide-field textarea {
+	width: 100%;
+}
+
+.marketplace-wide-field textarea {
+	min-height: 140px;
+	resize: vertical;
+}
+
+/* The title carries the most weight on this screen - a touch bigger than
+   the other two fields, same treatment a real form gives its headline. */
+.marketplace-wide-field:first-child input[type='text'] {
+	font-size: var(--font-ui-medium);
+}
+
+.marketplace-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+	gap: var(--size-4-3);
+}
+
+.marketplace-card {
+	padding: var(--size-4-3) var(--size-4-4);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background: var(--background-secondary);
+	transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.marketplace-card:hover {
+	border-color: var(--interactive-accent);
+	box-shadow: var(--shadow-s);
+}
+
+.marketplace-card-title {
+	font-weight: var(--font-semibold);
+	margin-bottom: var(--size-2-1);
+}
+
+.marketplace-card-meta {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin-bottom: var(--size-2-2);
+}
+
+.marketplace-card-desc {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	white-space: pre-wrap;
+	/* Long descriptions used to stretch a card past its neighbors, breaking
+	   the grid's rhythm - clip to 3 lines, same as any card-based catalog. */
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.marketplace-card-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+}
+
+/* Ostrzeżenie w ustawieniach - np. token lecący przez otwarte http. */
+.marketplace-warning {
+	color: var(--text-error);
+	margin-top: var(--size-2-2);
+}
+
+/* Kafelek prowadzi do szczegółów, więc musi wyglądać na klikalny. */
+.marketplace-card.mod-clickable {
+	cursor: pointer;
+}
+
+.marketplace-card.mod-clickable:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.marketplace-detail {
+	margin-top: var(--size-4-3);
+}
+
+.marketplace-detail-desc {
+	white-space: pre-wrap;
+	color: var(--text-muted);
+	margin-bottom: var(--size-4-2);
+}
+
+.marketplace-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-2-2);
+	margin: var(--size-2-3) 0;
+}
+
+.marketplace-tag {
+	cursor: pointer;
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-border);
+	font-size: var(--font-smaller);
+}
+
+.marketplace-tag:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* Drzewo bywa długie - własny scroll, żeby przyciski akcji nie uciekły poza modal. */
+.marketplace-tree {
+	max-height: 260px;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background: var(--background-secondary);
+	padding: var(--size-4-2);
+}
+
+.marketplace-tree-row {
+	white-space: nowrap;
+	line-height: 1.6;
+}
+
+.marketplace-tree-icon {
+	margin-right: var(--size-2-2);
+}
+
+.marketplace-tree-count,
+.marketplace-tree-empty {
+	color: var(--text-muted);
+	font-size: var(--font-smaller);
+	margin-top: var(--size-2-2);
+}
+
+/* --- znaleziska skanera treści --- */
+
+.marketplace-findings {
+	max-height: 260px;
+	overflow-y: auto;
+	margin-bottom: 0.75em;
+}
+
+.marketplace-finding {
+	padding: 0.5em 0.7em;
+	margin-bottom: 0.4em;
+	border-radius: var(--radius-m);
+	border-left: 3px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+}
+
+.marketplace-finding-danger {
+	border-left-color: var(--text-error);
+}
+
+.marketplace-finding-warning {
+	border-left-color: var(--text-warning);
+}
+
+.marketplace-finding-label {
+	font-weight: var(--font-semibold);
+}
+
+.marketplace-finding-path {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+/* Fragment podejrzanej treści: łamiemy długie linie, żeby nie rozpychał modala. */
+.marketplace-finding-sample {
+	display: block;
+	margin-top: 0.35em;
+	font-size: var(--font-ui-smaller);
+	white-space: pre-wrap;
+	word-break: break-all;
+	color: var(--text-muted);
+}
