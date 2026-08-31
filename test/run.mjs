@@ -13,22 +13,30 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const entryPoints = ['test/settings-render.ts', 'test/update-plan.ts'];
+const entryPoints = ['test/settings-render.ts', 'test/update-plan.ts', 'test/list-query.ts', 'test/install-record.ts'];
 let failed = false;
 
 for (const entryPoint of entryPoints) {
 	const name = entryPoint.split('/').pop().replace(/\.ts$/, '');
 	const outfile = join(tmpdir(), `notes-hub-uitest-${name}-${process.pid}.mjs`);
 
-	await esbuild.build({
-		entryPoints: [entryPoint],
-		bundle: true,
-		platform: 'node',
-		format: 'esm',
-		outfile,
-		alias: { obsidian: './test/obsidian-stub.js' },
-		define: { __API_BASE_URL__: JSON.stringify('http://127.0.0.1:8787') },
-	});
+	try {
+		await esbuild.build({
+			entryPoints: [entryPoint],
+			bundle: true,
+			platform: 'node',
+			format: 'esm',
+			outfile,
+			alias: { obsidian: './test/obsidian-stub.js' },
+			define: { __API_BASE_URL__: JSON.stringify('http://127.0.0.1:8787') },
+		});
+	} catch (err) {
+		// Caught rather than thrown: an unbundlable check would otherwise take
+		// the runner down and hide every check queued behind it.
+		console.log(`\n===== ${name} =====\nBUILD FAILED: ${err.message}`);
+		failed = true;
+		continue;
+	}
 
 	console.log(`\n===== ${name} =====`);
 	// A child process per check, not an import: each one ends with

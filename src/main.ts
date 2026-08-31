@@ -82,6 +82,11 @@ function readInstalls(value: unknown): Record<string, InstallRecord> {
 			path: record.path,
 			version: record.version as number,
 			installedAt: record.installedAt as number,
+			// Absent on records written before the Downloaded tab existed, and
+			// defaulted rather than rejected: a missing label is a blank card,
+			// not a reason to forget where a package is installed.
+			title: typeof record.title === 'string' ? record.title : '',
+			author: typeof record.author === 'string' ? record.author : '',
 		};
 	}
 

@@ -29,6 +29,8 @@ interface ApiRequest {
 	body?: string | ArrayBuffer;
 	/** Attaches the Authorization header and requires a valid token. */
 	auth?: boolean;
+	/** Query parameters. Empty values are dropped rather than sent as `key=`. */
+	query?: Record<string, string>;
 }
 
 /**
@@ -62,7 +64,7 @@ export async function apiRequest(
 	}
 
 	const response = await requestUrl({
-		url: `${apiBaseUrl}${req.path}`,
+		url: `${apiBaseUrl}${req.path}${queryString(req.query)}`,
 		method: req.method ?? 'GET',
 		...(req.contentType ? { contentType: req.contentType } : {}),
 		...(req.body ? { body: req.body } : {}),
@@ -79,6 +81,27 @@ export async function apiRequest(
 	}
 
 	return response;
+}
+
+/**
+ * Builds the query string, encoding as it goes.
+ *
+ * Kept out of assertSafeApiUrl's way on purpose: that function rejects a
+ * query on the base *address*, which is still right — a query belongs to the
+ * endpoint, never to the server the token is sent to.
+ */
+function queryString(query: Record<string, string> | undefined): string {
+	if (!query) return '';
+
+	const params = new URLSearchParams();
+	for (const [key, value] of Object.entries(query)) {
+		// An empty value is "no filter", and sending `tag=` would be read as
+		// a filter for the empty tag.
+		if (value !== '') params.append(key, value);
+	}
+
+	const search = params.toString();
+	return search ? `?${search}` : '';
 }
 
 /**

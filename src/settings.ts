@@ -17,6 +17,14 @@ export interface InstallRecord {
 	 * newer mtime was touched by the user, not by us.
 	 */
 	installedAt: number;
+	/**
+	 * Cached label for the Downloaded tab, which renders from these records
+	 * alone so it works offline and still lists a package the server dropped.
+	 * Not the description: 5000 characters per record in a file read at every
+	 * start, for text the card clamps to three lines anyway.
+	 */
+	title: string;
+	author: string;
 }
 
 export interface MarketplaceSettings {

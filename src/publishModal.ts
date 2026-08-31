@@ -242,7 +242,7 @@ class PublishModal extends Modal {
 		if (this.mine.length > 0) {
 			new Setting(this.bodyEl)
 				.setName('Publish as')
-				.setDesc('Replacing a package keeps its address and bumps its version.')
+				.setDesc('You can publish new package or update already existing one.')
 				.addDropdown((dropdown) => {
 					dropdown.addOption('', 'New package');
 					for (const pkg of this.mine) dropdown.addOption(pkg.id, `${pkg.title} (v${pkg.version})`);

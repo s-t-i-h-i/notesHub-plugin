@@ -1,5 +1,5 @@
-import { ButtonComponent, Modal, Notice, Setting, TFolder, normalizePath } from 'obsidian';
-import MarketplacePlugin from './main';
+import { ButtonComponent, Modal, Notice, Setting, TFolder, normalizePath, setIcon } from 'obsidian';
+import type MarketplacePlugin from './main';
 import type { InstallRecord } from './settings';
 import {
 	Package,
@@ -7,6 +7,8 @@ import {
 	downloadPackageArchive,
 	fetchPackage,
 	fetchPackages,
+	fetchTags,
+	type SortKey,
 } from './api/packagesApi';
 import {
 	applyUpdate,
@@ -21,28 +23,50 @@ import { UnauthorizedError } from './api/api';
 import { armButton } from './ui';
 import { renderFindings, renderConfirmRow } from './review';
 
-type SortKey = 'newest' | 'oldest' | 'title';
-
 const SORT_LABELS: Record<SortKey, string> = {
 	newest: 'Newest',
 	oldest: 'Oldest',
 	title: 'Title A-Z',
 };
 
+type TabKey = 'browse' | 'mine' | 'downloaded';
+
+const TAB_LABELS: Record<TabKey, string> = {
+	browse: 'Browse',
+	mine: 'My packages',
+	downloaded: 'Downloaded',
+};
+
 const ALL_TAGS = '';
+
+/** Catalog page size. Matches the server's default, so a short page means the end of the list. */
+const PAGE_SIZE = 20;
 
 /** Opens the package library. The server address is baked in at build time, nothing to check here. */
 export function openMarketplaceModal(plugin: MarketplacePlugin): void {
 	new MarketplaceModal(plugin).open();
 }
 
-class MarketplaceModal extends Modal {
+export class MarketplaceModal extends Modal {
 	private plugin: MarketplacePlugin;
 	private bodyEl!: HTMLElement;
 
+	/** Pages loaded so far, not the whole catalog. */
 	private packages: Package[] = [];
+	private tags: string[] = [];
+
+	private tab: TabKey = 'browse';
 	private tagFilter: string = ALL_TAGS;
 	private sortBy: SortKey = 'newest';
+
+	private offset = 0;
+	private loading = false;
+	private exhausted = false;
+
+	/** Installed packages the server no longer lists — deleted, or the author was banned. */
+	private orphans = new Set<string>();
+
+	private observer: IntersectionObserver | null = null;
 
 	constructor(plugin: MarketplacePlugin) {
 		super(plugin.app);
@@ -54,7 +78,7 @@ class MarketplaceModal extends Modal {
 		this.modalEl.addClass('marketplace-modal');
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.createEl('h2', { text: 'Package library' });
+		contentEl.createEl('h2', { text: 'Notes hub' });
 		// A separate container for the content: only this gets re-rendered, the heading stays.
 		this.bodyEl = contentEl.createDiv();
 
@@ -62,14 +86,33 @@ class MarketplaceModal extends Modal {
 	}
 
 	onClose() {
+		this.observer?.disconnect();
+		this.observer = null;
 		this.contentEl.empty();
 	}
 
 	private async load() {
+		await this.loadTags();
+		await this.reload();
+	}
+
+	/** Tag options are a nice-to-have — a failure here must not cost the user the list. */
+	private async loadTags() {
+		if (this.tags.length > 0) return;
+
+		try {
+			this.tags = await fetchTags(this.plugin.settings);
+		} catch (error) {
+			console.error(error);
+		}
+	}
+
+	/** A tab or filter change is a new first page, not a re-sort of what is on screen. */
+	private async reload() {
 		this.renderMessage('Loading...');
 
 		try {
-			this.packages = await fetchPackages(this.plugin.settings);
+			await this.loadPage(true);
 			this.renderList();
 		} catch (error) {
 			console.error(error);
@@ -78,16 +121,145 @@ class MarketplaceModal extends Modal {
 		}
 	}
 
-	/** A simple centered message, used for loading and empty states. */
-	private renderMessage(text: string) {
+	// --- paging ---
+
+	/**
+	 * Loads one page into `packages`. `reset` starts over from offset 0.
+	 *
+	 * Filtering and sorting are the server's job: over a paged list a
+	 * client-side tag filter could empty page 1 while page 4 is full of
+	 * matches.
+	 */
+	private async loadPage(reset: boolean): Promise<void> {
+		if (this.loading) return;
+		if (!reset && this.exhausted) return;
+
+		this.loading = true;
+		try {
+			if (reset) {
+				this.packages = [];
+				this.offset = 0;
+				this.exhausted = false;
+				this.orphans.clear();
+			}
+
+			if (this.tab === 'downloaded') {
+				this.loadInstalled();
+				return;
+			}
+
+			// Nothing to ask for: an empty author_id is dropped from the query,
+			// and the server would answer with the whole catalog instead.
+			if (this.tab === 'mine' && !this.plugin.settings.userId) {
+				this.exhausted = true;
+				return;
+			}
+
+			const page = await fetchPackages(this.plugin.settings, {
+				limit: PAGE_SIZE,
+				offset: this.offset,
+				sort: this.sortBy,
+				tag: this.tagFilter,
+				...(this.tab === 'mine' ? { authorId: this.plugin.settings.userId } : {}),
+			});
+
+			this.absorb(page);
+			// A short page is the end of the list — there is no total to read.
+			this.exhausted = page.length < PAGE_SIZE;
+		} finally {
+			this.loading = false;
+		}
+	}
+
+	/**
+	 * Appends a page, skipping ids already on screen.
+	 *
+	 * OFFSET paging shifts rows when someone publishes mid-scroll, so the same
+	 * package can arrive twice. `offset` still advances by the full page
+	 * length — counting only the new rows would re-request the same window
+	 * forever.
+	 */
+	private absorb(page: Package[]) {
+		const seen = new Set(this.packages.map((pkg) => pkg.id));
+		for (const pkg of page) {
+			if (!seen.has(pkg.id)) this.packages.push(pkg);
+		}
+
+		this.offset += page.length;
+	}
+
+	/**
+	 * The Downloaded tab reads local state, not the catalog.
+	 *
+	 * `settings.installs` is what is actually installed — resolveInstalled()
+	 * already treats it that way for updates. Asking the server for this list
+	 * would blank the tab offline and hide packages whose files are still in
+	 * the vault after the author deleted them.
+	 */
+	private loadInstalled() {
+		this.packages = Object.entries(this.plugin.settings.installs).map(([id, record]) =>
+			recordAsPackage(id, record),
+		);
+		// ponytail: one screen, no paging — install counts are in the tens.
+		this.exhausted = true;
+	}
+
+	/**
+	 * Fills in current versions for the Downloaded tab.
+	 *
+	 * A record only knows the version it installed, so without this the tab
+	 * could never show an "Update available" badge. Failure is silent on
+	 * purpose: the list is already on screen and already correct.
+	 */
+	private async enrichInstalled(grid: HTMLElement) {
+		const ids = this.packages.map((pkg) => pkg.id);
+		if (ids.length === 0) return;
+
+		let current: Package[];
+		try {
+			current = await fetchPackages(this.plugin.settings, { ids });
+		} catch (error) {
+			console.error(error);
+			return;
+		}
+
+		const byId = new Map(current.map((pkg) => [pkg.id, pkg]));
+		// The server's copy carries the real version, description and tags.
+		this.packages = this.packages.map((pkg) => byId.get(pkg.id) ?? pkg);
+		this.orphans = new Set(ids.filter((id) => !byId.has(id)));
+
+		// The user may have switched tabs while this was in flight.
+		if (grid.isConnected) {
+			grid.empty();
+			this.paintCards(grid);
+		}
+	}
+
+	// --- shared rendering ---
+
+	/**
+	 * Empties the body, taking the scroll observer with it.
+	 *
+	 * Every view stomps bodyEl, so the disconnect belongs here rather than
+	 * repeated in each render method — one of them would eventually forget.
+	 */
+	private clearBody() {
+		this.observer?.disconnect();
+		this.observer = null;
 		this.bodyEl.empty();
+	}
+
+	/** A simple message, used while loading. */
+	private renderMessage(text: string) {
+		this.clearBody();
 		this.bodyEl.createDiv({ text });
 	}
 
-	/** An error message with a retry button — the network can be flaky. */
+	/** An error panel with a retry button — the network can be flaky. */
 	private renderError(text: string) {
-		this.renderMessage(text);
-		new ButtonComponent(this.bodyEl)
+		this.clearBody();
+		const box = renderEmpty(this.bodyEl, 'alert-triangle', 'Something went wrong.', text);
+		new ButtonComponent(box)
 			.setButtonText('Try again')
 			.setCta()
 			.onClick(() => void this.load());
@@ -96,44 +268,51 @@ class MarketplaceModal extends Modal {
 	// --- list view ---
 
 	private renderList() {
-		this.bodyEl.empty();
+		this.clearBody();
+		this.renderTabs();
+
+		// Downloaded is a local list of tens of items sorted by nothing in
+		// particular; a tag filter there would be a control the server can't
+		// honour for it.
+		if (this.tab !== 'downloaded') this.renderToolbar();
 
 		if (this.packages.length === 0) {
-			this.renderMessage('The library is empty.');
+			this.renderEmptyState();
 			return;
 		}
 
-		this.renderToolbar();
+		this.renderGrid();
+	}
 
-		const visible = this.visiblePackages();
-		if (visible.length === 0) {
-			this.bodyEl.createDiv({ text: `No packages with tag #${this.tagFilter}.` });
-			return;
-		}
+	private renderTabs() {
+		const row = this.bodyEl.createDiv({ cls: 'marketplace-tabs' });
 
-		const grid = this.bodyEl.createDiv({ cls: 'marketplace-grid' });
-		for (const pkg of visible) {
-			this.renderCard(grid, pkg);
+		for (const [key, label] of Object.entries(TAB_LABELS)) {
+			const tab = row.createDiv({ cls: 'marketplace-tab', text: label });
+			if (key === this.tab) tab.addClass('is-active');
+
+			tab.addEventListener('click', () => {
+				if (this.tab === key) return;
+				this.tab = key as TabKey;
+				// Downloaded has no toolbar, so a tag left set there would be
+				// a filter with no visible way to clear it.
+				this.tagFilter = ALL_TAGS;
+				void this.reload();
+			});
 		}
 	}
 
 	private renderToolbar() {
-		// All tags from the catalog, deduplicated — the filter should only
-		// offer tags that actually exist.
-		const tags = [...new Set(this.packages.flatMap((pkg) => pkg.tags))].sort((a, b) =>
-			a.localeCompare(b, 'en'),
-		);
-
 		new Setting(this.bodyEl)
 			.setName('Tags and order')
 			.addDropdown((dropdown) => {
 				dropdown.addOption(ALL_TAGS, 'All tags');
-				for (const tag of tags) {
+				for (const tag of this.tags) {
 					dropdown.addOption(tag, `#${tag}`);
 				}
 				dropdown.setValue(this.tagFilter).onChange((value) => {
 					this.tagFilter = value;
-					this.renderList();
+					void this.reload();
 				});
 			})
 			.addDropdown((dropdown) => {
@@ -142,26 +321,126 @@ class MarketplaceModal extends Modal {
 				}
 				dropdown.setValue(this.sortBy).onChange((value) => {
 					this.sortBy = value as SortKey;
-					this.renderList();
+					void this.reload();
 				});
 			});
 	}
 
-	/**
-	 * Filtering and sorting happen client-side — the full list is already in
-	 * memory, so asking the server to do the same work would be pointless.
-	 */
-	private visiblePackages(): Package[] {
-		const filtered = this.tagFilter
-			? this.packages.filter((pkg) => pkg.tags.includes(this.tagFilter))
-			: [...this.packages];
+	/** Why the list is empty matters more than the fact that it is. */
+	private renderEmptyState() {
+		if (this.tagFilter) {
+			renderEmpty(
+				this.bodyEl,
+				'search-x',
+				`No packages tagged #${this.tagFilter}.`,
+				'Pick "All tags" to see everything.',
+			);
+			return;
+		}
 
-		return filtered.sort((a, b) => {
-			if (this.sortBy === 'title') return a.title.localeCompare(b.title, 'en');
-			// created_at is ISO-8601, so a plain string comparison is chronological
-			if (this.sortBy === 'oldest') return a.createdAt.localeCompare(b.createdAt);
-			return b.createdAt.localeCompare(a.createdAt);
-		});
+		if (this.tab === 'mine') {
+			if (this.plugin.settings.userId) {
+				renderEmpty(
+					this.bodyEl,
+					'upload',
+					"You haven't published anything yet.",
+					'Right-click a folder in the file explorer and pick "Publish".',
+				);
+			} else {
+				renderEmpty(
+					this.bodyEl,
+					'user-x',
+					'Log in to see your packages.',
+					'Connect your GitHub account in the plugin settings.',
+				);
+			}
+			return;
+		}
+
+		if (this.tab === 'downloaded') {
+			renderEmpty(
+				this.bodyEl,
+				'download',
+				"You haven't downloaded anything yet.",
+				'Packages you install from Browse show up here.',
+			);
+			return;
+		}
+
+		renderEmpty(this.bodyEl, 'library', 'The library is empty.');
+	}
+
+	private renderGrid() {
+		const grid = this.bodyEl.createDiv({ cls: 'marketplace-grid' });
+		this.paintCards(grid);
+
+		if (this.tab === 'downloaded') {
+			void this.enrichInstalled(grid);
+			return;
+		}
+
+		if (this.exhausted) return;
+
+		this.watch(grid, this.bodyEl.createDiv({ cls: 'marketplace-sentinel' }));
+	}
+
+	/** Appends only the cards not on screen yet, so a page load never disturbs scroll position. */
+	private paintCards(grid: HTMLElement) {
+		for (const pkg of this.packages.slice(grid.childElementCount)) {
+			this.renderCard(grid, pkg);
+		}
+	}
+
+	/** Arms the sentinel. Also the retry path, which is why it is separate from renderGrid(). */
+	private watch(grid: HTMLElement, sentinel: HTMLElement) {
+		sentinel.empty();
+		sentinel.setText('Loading more...');
+
+		// contentEl IS the modal's .modal-content — the element that actually
+		// scrolls — so it is the observer root, not the viewport.
+		this.observer = new IntersectionObserver(
+			(entries) => {
+				if (entries[0]?.isIntersecting) void this.loadMore(grid, sentinel);
+			},
+			{ root: this.contentEl, rootMargin: '200px' },
+		);
+		this.observer.observe(sentinel);
+	}
+
+	/**
+	 * Pulls the next page.
+	 *
+	 * A failure here leaves the loaded pages alone and offers a retry in the
+	 * sentinel: throwing away twenty cards the user is reading because page
+	 * three timed out would be worse than the error itself.
+	 */
+	private async loadMore(grid: HTMLElement, sentinel: HTMLElement) {
+		if (this.loading || this.exhausted) return;
+
+		try {
+			await this.loadPage(false);
+		} catch (error) {
+			console.error(error);
+			this.observer?.disconnect();
+			this.observer = null;
+
+			sentinel.empty();
+			sentinel.createSpan({
+				text: error instanceof Error ? error.message : String(error),
+			});
+			new ButtonComponent(sentinel)
+				.setButtonText('Try again')
+				.onClick(() => this.watch(grid, sentinel));
+			return;
+		}
+
+		this.paintCards(grid);
+
+		if (this.exhausted) {
+			this.observer?.disconnect();
+			this.observer = null;
+			sentinel.remove();
+		}
 	}
 
 	/** One package card. Clicking it opens the detail view. */
@@ -178,6 +457,11 @@ class MarketplaceModal extends Modal {
 		const installed = this.plugin.settings.installs[pkg.id];
 		if (installed && installed.version < pkg.version) {
 			card.createDiv({ cls: 'marketplace-badge', text: 'Update available' });
+		}
+		// Still listed, because the files are still in the vault — the user
+		// just can't get it again or update it.
+		if (this.orphans.has(pkg.id)) {
+			card.createDiv({ cls: 'marketplace-badge mod-muted', text: 'No longer published' });
 		}
 		if (meta) card.createDiv({ cls: 'marketplace-card-meta', text: meta });
 		if (pkg.description) {
@@ -202,7 +486,7 @@ class MarketplaceModal extends Modal {
 			new Notice('Failed to fetch the package structure');
 		}
 
-		this.bodyEl.empty();
+		this.clearBody();
 
 		new ButtonComponent(this.bodyEl)
 			.setButtonText('Back to list')
@@ -225,9 +509,11 @@ class MarketplaceModal extends Modal {
 			for (const tag of pkg.tags) {
 				const chip = tagRow.createSpan({ cls: 'marketplace-tag', text: `#${tag}` });
 				// Clicking a tag returns to the list, pre-filtered to it.
+				// Browse, not the current tab: Downloaded has no tag filter.
 				chip.addEventListener('click', () => {
+					this.tab = 'browse';
 					this.tagFilter = tag;
-					this.renderList();
+					void this.reload();
 				});
 			}
 		}
@@ -333,7 +619,7 @@ class MarketplaceModal extends Modal {
 	 * user needs to see this before the write happens, not after.
 	 */
 	private confirmInstall(pkg: Package, plan: PackagePlan, button: ButtonComponent) {
-		this.bodyEl.empty();
+		this.clearBody();
 		this.bodyEl.createEl('h3', { text: `Review contents: ${pkg.title}` });
 		this.bodyEl.createDiv({
 			cls: 'marketplace-detail-desc',
@@ -364,7 +650,7 @@ class MarketplaceModal extends Modal {
 		const modified = update.writes.filter((write) => write.status === 'modified');
 		const count = (status: string) => update.writes.filter((write) => write.status === status).length;
 
-		this.bodyEl.empty();
+		this.clearBody();
 		this.bodyEl.createEl('h3', { text: `Update: ${pkg.title}` });
 		this.bodyEl.createDiv({
 			cls: 'marketplace-detail-desc',
@@ -443,6 +729,9 @@ class MarketplaceModal extends Modal {
 			path,
 			version: pkg.version,
 			installedAt: Date.now(),
+			// Cached so the Downloaded tab can draw this card without the network.
+			title: pkg.title,
+			author: pkg.author,
 		};
 	}
 
@@ -485,8 +774,10 @@ class MarketplaceModal extends Modal {
 		try {
 			await deletePackage(this.plugin.settings, pkg.id);
 			new Notice(`Deleted: ${pkg.title}`);
-			// Reload instead of patching the list in place — the view
-			// should reflect server state, not our guess at it.
+			// Reload instead of patching the list in place — the view should
+			// reflect server state, not our guess at it. Tags are cleared too:
+			// that may have been the last package carrying one.
+			this.tags = [];
 			void this.load();
 		} catch (error) {
 			console.error(error);
@@ -497,6 +788,42 @@ class MarketplaceModal extends Modal {
 			);
 		}
 	}
+}
+
+/**
+ * A synthetic Package for a local install record.
+ *
+ * Only the cached fields are real. `version` is the INSTALLED version, so no
+ * update badge shows until enrichInstalled() swaps in the server's copy.
+ */
+function recordAsPackage(id: string, record: InstallRecord): Package {
+	return {
+		id,
+		title: record.title || '(untitled)',
+		description: '',
+		author: record.author,
+		authorId: '',
+		tags: [],
+		filename: '',
+		createdAt: '',
+		version: record.version,
+		updatedAt: '',
+		structure: [],
+	};
+}
+
+/**
+ * The shared empty/error panel.
+ *
+ * Takes a parent instead of clearing the body: an empty tab still has to show
+ * its tab strip, or there is no way to switch away from it.
+ */
+function renderEmpty(parent: HTMLElement, icon: string, title: string, hint = ''): HTMLElement {
+	const box = parent.createDiv({ cls: 'marketplace-empty' });
+	setIcon(box.createDiv({ cls: 'marketplace-empty-icon' }), icon);
+	box.createDiv({ cls: 'marketplace-empty-title', text: title });
+	if (hint) box.createDiv({ cls: 'marketplace-empty-hint', text: hint });
+	return box;
 }
 
 // --- file tree ---

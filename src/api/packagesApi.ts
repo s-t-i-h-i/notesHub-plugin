@@ -53,9 +53,46 @@ export async function fetchPackage(
 	return toPackage(response.json);
 }
 
-/** Fetches the package list from the marketplace server. */
-export async function fetchPackages(settings: MarketplaceSettings): Promise<Package[]> {
-	const response = await apiRequest(settings, { path: '/packages' });
+/** How the catalog is sorted. The server owns the ordering, so these names are its vocabulary. */
+export type SortKey = 'newest' | 'oldest' | 'title';
+
+/**
+ * One page of the catalog.
+ *
+ * Filtering and sorting are the server's job now: with paging, a client-side
+ * tag filter over page 1 can return nothing while page 4 is full of matches.
+ */
+export interface ListQuery {
+	limit?: number;
+	offset?: number;
+	sort?: SortKey;
+	tag?: string;
+	authorId?: string;
+	/** Asks for exactly these packages, unpaged. Used to look up installed ones. */
+	ids?: string[];
+}
+
+/**
+ * Fetches one page of the package list.
+ *
+ * The response is a plain array, so a short page is the end-of-list signal —
+ * there is no total to read and no cursor to carry.
+ */
+export async function fetchPackages(
+	settings: MarketplaceSettings,
+	query: ListQuery = {},
+): Promise<Package[]> {
+	const response = await apiRequest(settings, {
+		path: '/packages',
+		query: {
+			...(query.limit !== undefined ? { limit: String(query.limit) } : {}),
+			...(query.offset !== undefined ? { offset: String(query.offset) } : {}),
+			...(query.sort ? { sort: query.sort } : {}),
+			...(query.tag ? { tag: query.tag } : {}),
+			...(query.authorId ? { author_id: query.authorId } : {}),
+			...(query.ids ? { ids: query.ids.join(',') } : {}),
+		},
+	});
 
 	const data: unknown = response.json;
 	if (!Array.isArray(data)) {
@@ -63,6 +100,23 @@ export async function fetchPackages(settings: MarketplaceSettings): Promise<Pack
 	}
 
 	return data.map(toPackage);
+}
+
+/**
+ * Every tag in the catalog.
+ *
+ * The filter dropdown used to build its options from the loaded packages,
+ * which only worked while the client held the whole catalog at once.
+ */
+export async function fetchTags(settings: MarketplaceSettings): Promise<string[]> {
+	const response = await apiRequest(settings, { path: '/tags' });
+
+	const data: unknown = response.json;
+	if (!Array.isArray(data)) {
+		throw new Error('The server returned something other than a tag list');
+	}
+
+	return data.filter((tag): tag is string => typeof tag === 'string' && tag.length > 0);
 }
 
 /** Deletes one of your own packages. Ownership is verified server-side anyway. */
