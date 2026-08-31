@@ -6,6 +6,19 @@ import { API_BASE_URL } from './constants';
 import { closeAccount, fetchMe, revokeToken } from './api/accountApi';
 import { armButton } from './ui';
 
+/** What a downloaded package left in the vault, so an update knows where to write. */
+export interface InstallRecord {
+	/** Folder the package was written to. Re-resolved before every write — the user can move or delete it. */
+	path: string;
+	/** Package version at the time of writing, compared against the catalog to offer an update. */
+	version: number;
+	/**
+	 * When the files were written, taken AFTER the last write. Anything with a
+	 * newer mtime was touched by the user, not by us.
+	 */
+	installedAt: number;
+}
+
 export interface MarketplaceSettings {
 	/** Access token. The publish author comes from this, never from a form field. */
 	token: string;
@@ -14,13 +27,22 @@ export interface MarketplaceSettings {
 	/** Compared against a package's author_id to show "Delete" only on your own packages. */
 	userId: string;
 	downloadFolder: string;
+	/**
+	 * Installed packages, keyed by package id — not by folder path. A path key
+	 * would need a vault rename handler to stay correct, and renaming a PARENT
+	 * folder fires one event while silently repathing every child, so exact-key
+	 * matching would miss them all. Keyed by id, a rename just makes the record
+	 * unresolvable, which degrades to a plain fresh install.
+	 */
+	installs: Record<string, InstallRecord>;
 }
 
 export const DEFAULT_SETTINGS: MarketplaceSettings = {
 	token: '',
 	username: '',
 	userId: '',
-	downloadFolder: 'marketplace-downloads'
+	downloadFolder: 'marketplace-downloads',
+	installs: {},
 };
 
 export class MarketplaceSettingTab extends PluginSettingTab {

@@ -12,6 +12,10 @@ export interface Package {
 	tags: string[];
 	filename: string;
 	createdAt: string;
+	/** Bumped by the server on every update. The only signal that an installed copy is out of date. */
+	version: number;
+	/** Empty when the package has never been updated — the UI falls back to createdAt. */
+	updatedAt: string;
 	/** Relative file paths in the archive. Empty in list results — fetchPackage() fills this in. */
 	structure: string[];
 }
@@ -86,6 +90,11 @@ function toPackage(raw: unknown): Package {
 		tags: toTags(row.tags),
 		filename: asText(row.filename),
 		createdAt: asText(row.created_at),
+		// Not asText: this one is compared, not displayed. Defaulting to 1
+		// matters — an older worker sends no version at all, and
+		// `undefined < 3` is false, so updates would never offer themselves.
+		version: Number(row.version) || 1,
+		updatedAt: asText(row.updated_at),
 		structure: toStructure(row.structure),
 	};
 }

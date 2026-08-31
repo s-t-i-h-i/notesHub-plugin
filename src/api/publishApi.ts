@@ -16,6 +16,10 @@ export interface PublishMetadata {
  *
  * `files` was already validated by openPublishModal(), so this publishes
  * exactly the set of files that passed link validation.
+ *
+ * With `packageId` the server replaces that package instead of creating a
+ * new one, keeping its id and bumping its version. Ownership is checked
+ * server-side from the token; passing an id you don't own is a 403.
  */
 export async function publishFolder(
 	app: App,
@@ -23,6 +27,7 @@ export async function publishFolder(
 	files: TFile[],
 	metadata: PublishMetadata,
 	settings: MarketplaceSettings,
+	packageId?: string,
 ): Promise<void> {
 	// the vault root's path is "/", so there's no prefix to strip in that case
 	const prefix = folder.isRoot() ? '' : folder.path + '/';
@@ -41,7 +46,7 @@ export async function publishFolder(
 		);
 	}
 
-	await upload(archive, `${folder.name}.zip`, metadata, structure, settings);
+	await upload(archive, `${folder.name}.zip`, metadata, structure, settings, packageId);
 }
 
 async function packFolder(
@@ -64,6 +69,7 @@ async function upload(
 	metadata: PublishMetadata,
 	structure: string[],
 	settings: MarketplaceSettings,
+	packageId?: string,
 ): Promise<void> {
 	const boundary = randomBoundary();
 	const body = buildMultipartBody(
@@ -73,6 +79,8 @@ async function upload(
 			description: metadata.description,
 			tags: metadata.tags.join(','),
 			structure: JSON.stringify(structure),
+			// An empty id means "new package", so the field is always safe to send.
+			id: packageId ?? '',
 			// no "author" field — the server derives it from the token
 		},
 		filename,
@@ -119,6 +127,14 @@ function buildMultipartBody(
 	const parts: Uint8Array[] = [];
 
 	for (const [name, value] of Object.entries(fields)) {
+		// Field values go into the body raw, so a value containing the
+		// boundary could close its part early and append fields of its own.
+		// A random boundary makes that astronomically unlikely; this makes it
+		// impossible, for every field at once instead of per caller.
+		if (value.includes(boundary)) {
+			throw new Error(`Cannot send the "${name}" field: it collides with the request boundary`);
+		}
+
 		parts.push(
 			encoder.encode(
 				`--${boundary}\r\n` +

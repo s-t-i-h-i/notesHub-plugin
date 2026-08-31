@@ -2,6 +2,7 @@ import { ButtonComponent, Modal, Notice, Setting, TFile, TFolder } from 'obsidia
 import MarketplacePlugin from './main';
 import { collectFiles, findBrokenLinks, findNameProblems, type BrokenLink } from './files';
 import { publishFolder } from './api/publishApi';
+import { fetchPackages, type Package } from './api/packagesApi';
 import { UnauthorizedError } from './api/api';
 import { isScannable, scanContent, type Finding } from './scan';
 import { MAX_PUBLISH_BYTES } from './constants';
@@ -45,6 +46,10 @@ class PublishModal extends Modal {
 	private files: TFile[];
 	private values: Record<FieldKey, string>;
 	private bodyEl!: HTMLElement;
+	/** Packages this account owns, offered as update targets. Empty if the catalog can't be reached. */
+	private mine: Package[] = [];
+	/** Package to replace, or '' to publish a new one. */
+	private targetId = '';
 
 	constructor(plugin: MarketplacePlugin, folder: TFolder, files: TFile[]) {
 		super(plugin.app);
@@ -85,6 +90,7 @@ class PublishModal extends Modal {
 		const links = findBrokenLinks(this.app, this.files);
 		const findings = await this.scanFiles();
 		const bytes = this.files.reduce((sum, file) => sum + file.stat.size, 0);
+		this.mine = await this.fetchOwnPackages();
 
 		this.bodyEl.empty();
 
@@ -101,7 +107,7 @@ class PublishModal extends Modal {
 					: ''),
 		});
 
-		// A hard block, not a warning: installPackage() rejects the whole
+		// A hard block, not a warning: inspectArchive() rejects the whole
 		// archive for a name like this, so "publish anyway" would just move
 		// the failure to every downloader instead of preventing it.
 		if (nameProblems.length > 0) {
@@ -134,6 +140,26 @@ class PublishModal extends Modal {
 	}
 
 	/** Reads the package's text files and scans them for active content. */
+	/**
+	 * The account's own packages, to offer as update targets.
+	 *
+	 * A failure here is not fatal: publishing as a new package still works,
+	 * and forcing the author back to the file menu because the catalog
+	 * blinked would be worse than an empty dropdown.
+	 */
+	private async fetchOwnPackages(): Promise<Package[]> {
+		const { userId } = this.plugin.settings;
+		if (!userId) return [];
+
+		try {
+			const packages = await fetchPackages(this.plugin.settings);
+			return packages.filter((pkg) => pkg.authorId === userId);
+		} catch (error) {
+			console.error('Failed to fetch your packages', error);
+			return [];
+		}
+	}
+
 	private async scanFiles(): Promise<Finding[]> {
 		const findings: Finding[] = [];
 
@@ -213,6 +239,29 @@ class PublishModal extends Modal {
 	private renderForm() {
 		this.bodyEl.empty();
 
+		if (this.mine.length > 0) {
+			new Setting(this.bodyEl)
+				.setName('Publish as')
+				.setDesc('Replacing a package keeps its address and bumps its version.')
+				.addDropdown((dropdown) => {
+					dropdown.addOption('', 'New package');
+					for (const pkg of this.mine) dropdown.addOption(pkg.id, `${pkg.title} (v${pkg.version})`);
+					dropdown.setValue(this.targetId).onChange((value) => {
+						this.targetId = value;
+						// Prefill from the package being replaced: the update
+						// sends every field, so an untouched form must carry
+						// the existing description and tags, not blanks.
+						const target = this.mine.find((pkg) => pkg.id === value);
+						this.values = target
+							? { title: target.title, description: target.description, tags: target.tags.join(', ') }
+							: { title: this.folder.name, description: '', tags: '' };
+
+						this.bodyEl.empty();
+						this.renderForm();
+					});
+				});
+		}
+
 		for (const field of FIELDS) {
 			const setting = new Setting(this.bodyEl).setName(field.name);
 			// Label above the field, control stretched full width - the default
@@ -233,7 +282,7 @@ class PublishModal extends Modal {
 
 		new Setting(this.bodyEl).addButton((button) =>
 			button
-				.setButtonText('Publish')
+				.setButtonText(this.targetId ? 'Publish update' : 'Publish')
 				.setCta()
 				.onClick(() => void this.publish(button)),
 		);
@@ -264,9 +313,10 @@ class PublishModal extends Modal {
 						.filter((tag) => tag.length > 0),
 				},
 				this.plugin.settings,
+				this.targetId || undefined,
 			);
 
-			new Notice('Published');
+			new Notice(this.targetId ? 'Update published' : 'Published');
 			this.close();
 		} catch (error) {
 			console.error(error);
@@ -279,7 +329,7 @@ class PublishModal extends Modal {
 							(error instanceof Error ? error.message : String(error)),
 			);
 			button.setDisabled(false);
-			button.setButtonText('Publish');
+			button.setButtonText(this.targetId ? 'Publish update' : 'Publish');
 		}
 	}
 

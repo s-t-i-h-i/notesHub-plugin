@@ -64,6 +64,16 @@
 	margin-bottom: var(--size-2-2);
 }
 
+.marketplace-badge {
+	align-self: flex-start;
+	margin-top: var(--size-2-1);
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-size: var(--font-smaller);
+}
+
 .marketplace-card-desc {
 	font-size: var(--font-ui-small);
 	color: var(--text-normal);

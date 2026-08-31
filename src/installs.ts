@@ -1,4 +1,4 @@
-import { App, normalizePath } from 'obsidian';
+import { App, normalizePath, TFile, TFolder } from 'obsidian';
 import JSZip from 'jszip';
 import { DEFAULT_SETTINGS } from './settings';
 import {
@@ -128,6 +128,158 @@ export async function installPlan(
 	}
 
 	return root;
+}
+
+/**
+ * What writing one archive entry over an installed package would do.
+ *
+ * `identical` is not an optimization: sync tools (Obsidian Sync, Dropbox,
+ * iCloud, git) touch mtime without changing content, so without a byte
+ * comparison first the mtime check below would call the whole package
+ * locally modified and trash every file on every update.
+ */
+type FileStatus = 'new' | 'identical' | 'changed' | 'modified';
+
+interface PlannedWrite {
+	file: PlannedFile;
+	status: FileStatus;
+	existing: TFile | null;
+	data: ArrayBuffer;
+}
+
+/** A validated archive matched against the folder it will be written over. */
+export interface UpdatePlan {
+	root: string;
+	writes: PlannedWrite[];
+}
+
+/**
+ * Works out what updating an installed package would change. Writes nothing.
+ *
+ * `installedAt` is the timestamp recorded after the last install, so a file
+ * whose content differs AND whose mtime is newer was edited by the user.
+ *
+ * ponytail: mtime is a heuristic, exact only to the filesystem's timestamp
+ * resolution — an edit made in the same tick as the install reads as
+ * untouched. Byte comparison covers the common false positive; per-file
+ * hashes in the install record would be the upgrade if the rest ever bites.
+ */
+export async function planUpdate(
+	app: App,
+	plan: PackagePlan,
+	root: string,
+	installedAt: number,
+): Promise<UpdatePlan> {
+	assertInsideVault(root);
+
+	// One case-insensitive index instead of getAbstractFileByPath() per file:
+	// that lookup is case-sensitive while macOS and Windows are not, so an
+	// archive holding "Note.md" over a vault holding "note.md" would look
+	// like a new file and then collide at the filesystem level mid-write.
+	const existingFiles = indexFolder(app, root);
+	const writes: PlannedWrite[] = [];
+
+	for (const file of plan.files) {
+		const data = await file.entry.async('arraybuffer');
+		const existing = existingFiles.get(file.path.toLowerCase()) ?? null;
+
+		if (existing === null) {
+			writes.push({ file, status: 'new', existing, data });
+			continue;
+		}
+
+		const current = await app.vault.readBinary(existing);
+		if (sameBytes(current, data)) {
+			writes.push({ file, status: 'identical', existing, data });
+			continue;
+		}
+
+		const status = existing.stat.mtime > installedAt ? 'modified' : 'changed';
+		writes.push({ file, status, existing, data });
+	}
+
+	return { root, writes };
+}
+
+/**
+ * Writes an update over an installed package.
+ *
+ * Deliberately no rollback(): that trashes the whole root folder, which here
+ * would take the user's own notes with it. A half-applied update is instead
+ * made safe by being repeatable — the caller must not advance the install
+ * record unless this resolves, so pressing Update again replays the same
+ * plan, skips everything already written, and finishes the rest.
+ */
+export async function applyUpdate(app: App, update: UpdatePlan): Promise<void> {
+	const folders = new Set<string>([update.root]);
+
+	for (const write of update.writes) {
+		// Already byte-identical — writing it would only churn mtime and make
+		// the next update think the user had touched it.
+		if (write.status === 'identical') continue;
+
+		const path = `${update.root}/${write.file.path}`;
+		await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
+
+		if (write.existing === null) {
+			await app.vault.createBinary(path, write.data);
+			continue;
+		}
+
+		// The user's version goes to the trash rather than under the new
+		// bytes: an update is not allowed to destroy an edit outright.
+		if (write.status === 'modified') {
+			await app.fileManager.trashFile(write.existing);
+			await app.vault.createBinary(path, write.data);
+			continue;
+		}
+
+		await app.vault.modifyBinary(write.existing, write.data);
+	}
+}
+
+/**
+ * Resolves an install record to the folder it names, or null if it no longer
+ * holds.
+ *
+ * This is a security gate, not just a staleness check: the path comes from
+ * data.json, which is hand-editable, and it is a write target. Obsidian's
+ * index only contains real in-vault paths, so anything with ".." in it
+ * simply doesn't resolve — normalizePath() would not have stripped it.
+ */
+export function resolveInstall(app: App, path: string): TFolder | null {
+	const folder = app.vault.getAbstractFileByPath(normalizePath(path));
+	return folder instanceof TFolder ? folder : null;
+}
+
+/** Maps every file under `root` by its lowercased path relative to root. */
+function indexFolder(app: App, root: string): Map<string, TFile> {
+	const files = new Map<string, TFile>();
+	const folder = app.vault.getAbstractFileByPath(root);
+	if (!(folder instanceof TFolder)) return files;
+
+	const prefix = `${root}/`;
+	const walk = (current: TFolder): void => {
+		for (const child of current.children) {
+			if (child instanceof TFolder) walk(child);
+			else if (child instanceof TFile) files.set(child.path.slice(prefix.length).toLowerCase(), child);
+		}
+	};
+	walk(folder);
+
+	return files;
+}
+
+function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
+	if (a.byteLength !== b.byteLength) return false;
+
+	const left = new Uint8Array(a);
+	const right = new Uint8Array(b);
+	for (let i = 0; i < left.length; i++) {
+		if (left[i] !== right[i]) return false;
+	}
+
+	return true;
 }
 
 /** PK\x03\x04 for a normal archive, PK\x05\x06 for an empty one. */

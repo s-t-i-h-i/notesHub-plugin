@@ -1,5 +1,6 @@
-import { ButtonComponent, Modal, Notice, Setting } from 'obsidian';
+import { ButtonComponent, Modal, Notice, Setting, TFolder } from 'obsidian';
 import MarketplacePlugin from './main';
+import type { InstallRecord } from './settings';
 import {
 	Package,
 	deletePackage,
@@ -7,7 +8,16 @@ import {
 	fetchPackage,
 	fetchPackages,
 } from './api/packagesApi';
-import { inspectArchive, installPlan, formatBytes, type PackagePlan } from './installs';
+import {
+	applyUpdate,
+	inspectArchive,
+	installPlan,
+	formatBytes,
+	planUpdate,
+	resolveInstall,
+	type PackagePlan,
+	type UpdatePlan,
+} from './installs';
 import { UnauthorizedError } from './api/api';
 import { armButton } from './ui';
 import { renderFindings, renderConfirmRow } from './review';
@@ -163,6 +173,11 @@ class MarketplaceModal extends Modal {
 
 		const card = grid.createDiv({ cls: 'marketplace-card mod-clickable' });
 		card.createDiv({ cls: 'marketplace-card-title', text: pkg.title });
+		// On the card, not just in the detail view: otherwise an update could
+		// only be found by opening every package in turn.
+		if (this.isOutdated(pkg)) {
+			card.createDiv({ cls: 'marketplace-badge', text: 'Update available' });
+		}
 		if (meta) card.createDiv({ cls: 'marketplace-card-meta', text: meta });
 		if (pkg.description) {
 			card.createDiv({ cls: 'marketplace-card-desc', text: pkg.description });
@@ -195,7 +210,13 @@ class MarketplaceModal extends Modal {
 		const detail = this.bodyEl.createDiv({ cls: 'marketplace-detail' });
 		detail.createEl('h3', { text: pkg.title });
 
-		const meta = [pkg.author, formatDate(pkg.createdAt)].filter(Boolean).join(' · ');
+		const meta = [
+			pkg.author,
+			formatDate(pkg.createdAt),
+			pkg.updatedAt ? `updated ${formatDate(pkg.updatedAt)}` : '',
+		]
+			.filter(Boolean)
+			.join(' · ');
 		if (meta) detail.createDiv({ cls: 'marketplace-card-meta', text: meta });
 
 		if (pkg.tags.length > 0) {
@@ -219,8 +240,22 @@ class MarketplaceModal extends Modal {
 		detail.createEl('h4', { text: 'Contents' });
 		this.renderStructure(detail, pkg.structure);
 
+		const installed = this.resolveInstalled(pkg.id);
+		if (installed) {
+			detail.createDiv({
+				cls: 'marketplace-detail-desc',
+				text: `Installed at: ${installed.folder.path} (v${installed.record.version})`,
+			});
+		}
+
 		const actions = detail.createDiv({ cls: 'marketplace-card-actions' });
-		const download = new ButtonComponent(actions).setButtonText('Download').setCta();
+		const download = new ButtonComponent(actions)
+			.setButtonText(
+				installed && installed.record.version < pkg.version
+					? `Update (v${installed.record.version} → v${pkg.version})`
+					: 'Download',
+			)
+			.setCta();
 		download.onClick(() => void this.download(pkg, download));
 
 		// A UI hint, not a security check — ownership is verified server-side.
@@ -263,6 +298,20 @@ class MarketplaceModal extends Modal {
 			// the vault until this point.
 			const plan = await inspectArchive(archive);
 
+			// An installed copy is updated in place; everything else is a
+			// fresh install into a new folder, exactly as before.
+			const installed = this.resolveInstalled(pkg.id);
+			if (installed !== null) {
+				const update = await planUpdate(
+					this.app,
+					plan,
+					installed.folder.path,
+					installed.record.installedAt,
+				);
+				this.confirmUpdate(pkg, plan, update, button);
+				return;
+			}
+
 			if (plan.findings.length > 0) {
 				this.confirmInstall(pkg, plan, button);
 				return;
@@ -303,6 +352,62 @@ class MarketplaceModal extends Modal {
 		);
 	}
 
+	/**
+	 * Asks before writing over an installed package.
+	 *
+	 * Unlike the install prompt, this one is unconditional: even a clean
+	 * archive overwrites files the user may have edited, so the question is
+	 * about the write plan, not only about active content.
+	 */
+	private confirmUpdate(pkg: Package, plan: PackagePlan, update: UpdatePlan, button: ButtonComponent) {
+		const modified = update.writes.filter((write) => write.status === 'modified');
+		const count = (status: string) => update.writes.filter((write) => write.status === status).length;
+
+		this.bodyEl.empty();
+		this.bodyEl.createEl('h3', { text: `Update: ${pkg.title}` });
+		this.bodyEl.createDiv({
+			cls: 'marketplace-detail-desc',
+			text:
+				`Writing into ${update.root}: ${count('new')} new, ${count('changed')} replaced, ` +
+				`${modified.length} of your own edits, ${count('identical')} unchanged. ` +
+				'Files that are not part of the package are left alone.',
+		});
+
+		if (modified.length > 0) {
+			this.bodyEl.createEl('h4', { text: `Edited since you installed (${modified.length})` });
+			const list = this.bodyEl.createDiv({ cls: 'marketplace-findings' });
+			for (const write of modified) {
+				const row = list.createDiv({ cls: 'marketplace-finding marketplace-finding-warning' });
+				row.createDiv({ cls: 'marketplace-finding-label', text: 'Moved to trash, then replaced' });
+				row.createDiv({ cls: 'marketplace-finding-path', text: write.file.path });
+			}
+		}
+
+		renderFindings(this.bodyEl, plan.findings);
+
+		renderConfirmRow(
+			this.bodyEl,
+			'Update',
+			() => void this.writeUpdate(pkg, update, button),
+			() => void this.showDetail(pkg),
+		);
+	}
+
+	private async writeUpdate(pkg: Package, update: UpdatePlan, button: ButtonComponent) {
+		try {
+			await applyUpdate(this.app, update);
+			this.rememberInstall(pkg, update.root);
+			await this.plugin.saveSettings();
+
+			new Notice(`Updated: ${update.root}`);
+			void this.showDetail(pkg);
+		} catch (error) {
+			// The record is deliberately left at the old version: the update
+			// stays on offer, and repeating it skips whatever already landed.
+			this.failDownload(error, button);
+		}
+	}
+
 	/** Writes to the vault — the only place files actually get created. */
 	private async write(pkg: Package, plan: PackagePlan, button: ButtonComponent) {
 		try {
@@ -313,14 +418,56 @@ class MarketplaceModal extends Modal {
 				pkg.title,
 			);
 
+			this.rememberInstall(pkg, folder);
+			// Saved BEFORE the redraw: showDetail() reads the record to pick
+			// the button label and the "Installed at" line.
+			await this.plugin.saveSettings();
+
 			new Notice(`Downloaded to: ${folder}`);
 			void this.showDetail(pkg);
-			// Leave the button disabled — a second click would create a
-			// "Package 2" copy, which is almost always a mistake, not the intent.
-			button.setButtonText('Downloaded');
 		} catch (error) {
 			this.failDownload(error, button);
 		}
+	}
+
+	// --- install records ---
+
+	/**
+	 * Records where a package landed. The timestamp is taken here, AFTER the
+	 * writes: createBinary() sets mtime to now, so one captured earlier would
+	 * make the next update read every file we just wrote as a user edit.
+	 */
+	private rememberInstall(pkg: Package, path: string) {
+		this.plugin.settings.installs[pkg.id] = {
+			path,
+			version: pkg.version,
+			installedAt: Date.now(),
+		};
+	}
+
+	/**
+	 * The folder an installed package lives in, or null if the record no
+	 * longer holds — the user may have deleted or renamed it. A stale record
+	 * is dropped rather than repaired: without it the package simply installs
+	 * fresh, which is the pre-update behaviour and always safe.
+	 */
+	private resolveInstalled(id: string): { folder: TFolder; record: InstallRecord } | null {
+		const record = this.plugin.settings.installs[id];
+		if (!record) return null;
+
+		const folder = resolveInstall(this.app, record.path);
+		if (folder === null) {
+			delete this.plugin.settings.installs[id];
+			void this.plugin.saveSettings();
+			return null;
+		}
+
+		return { folder, record };
+	}
+
+	private isOutdated(pkg: Package): boolean {
+		const record = this.plugin.settings.installs[pkg.id];
+		return record !== undefined && record.version < pkg.version;
 	}
 
 	private failDownload(error: unknown, button: ButtonComponent) {
