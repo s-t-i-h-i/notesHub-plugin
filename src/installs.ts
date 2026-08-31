@@ -144,7 +144,6 @@ interface PlannedWrite {
 	file: PlannedFile;
 	status: FileStatus;
 	existing: TFile | null;
-	data: ArrayBuffer;
 }
 
 /** A validated archive matched against the folder it will be written over. */
@@ -158,6 +157,12 @@ export interface UpdatePlan {
  *
  * `installedAt` is the timestamp recorded after the last install, so a file
  * whose content differs AND whose mtime is newer was edited by the user.
+ *
+ * The decompressed bytes are deliberately NOT kept in the plan: the user can
+ * leave the confirmation screen open indefinitely, and pinning them would
+ * hold the whole unpacked package (up to MAX_UNCOMPRESSED_BYTES) until they
+ * decide. applyUpdate() re-reads each entry as it writes it, the same way
+ * writeFiles() does on the install path.
  *
  * ponytail: mtime is a heuristic, exact only to the filesystem's timestamp
  * resolution — an edit made in the same tick as the install reads as
@@ -180,22 +185,24 @@ export async function planUpdate(
 	const writes: PlannedWrite[] = [];
 
 	for (const file of plan.files) {
-		const data = await file.entry.async('arraybuffer');
 		const existing = existingFiles.get(file.path.toLowerCase()) ?? null;
 
 		if (existing === null) {
-			writes.push({ file, status: 'new', existing, data });
+			writes.push({ file, status: 'new', existing });
 			continue;
 		}
 
+		// Both buffers fall out of scope at the end of the iteration, so the
+		// comparison costs two files' worth of memory, not the whole package.
+		const data = await file.entry.async('arraybuffer');
 		const current = await app.vault.readBinary(existing);
 		if (sameBytes(current, data)) {
-			writes.push({ file, status: 'identical', existing, data });
+			writes.push({ file, status: 'identical', existing });
 			continue;
 		}
 
 		const status = existing.stat.mtime > installedAt ? 'modified' : 'changed';
-		writes.push({ file, status, existing, data });
+		writes.push({ file, status, existing });
 	}
 
 	return { root, writes };
@@ -221,8 +228,13 @@ export async function applyUpdate(app: App, update: UpdatePlan): Promise<void> {
 		const path = `${update.root}/${write.file.path}`;
 		await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
 
+		// Unpacked here rather than in the plan, one file at a time — see
+		// planUpdate(). Identical entries are skipped above, so they are
+		// never decompressed twice.
+		const data = await write.file.entry.async('arraybuffer');
+
 		if (write.existing === null) {
-			await app.vault.createBinary(path, write.data);
+			await app.vault.createBinary(path, data);
 			continue;
 		}
 
@@ -230,26 +242,12 @@ export async function applyUpdate(app: App, update: UpdatePlan): Promise<void> {
 		// bytes: an update is not allowed to destroy an edit outright.
 		if (write.status === 'modified') {
 			await app.fileManager.trashFile(write.existing);
-			await app.vault.createBinary(path, write.data);
+			await app.vault.createBinary(path, data);
 			continue;
 		}
 
-		await app.vault.modifyBinary(write.existing, write.data);
+		await app.vault.modifyBinary(write.existing, data);
 	}
-}
-
-/**
- * Resolves an install record to the folder it names, or null if it no longer
- * holds.
- *
- * This is a security gate, not just a staleness check: the path comes from
- * data.json, which is hand-editable, and it is a write target. Obsidian's
- * index only contains real in-vault paths, so anything with ".." in it
- * simply doesn't resolve — normalizePath() would not have stripped it.
- */
-export function resolveInstall(app: App, path: string): TFolder | null {
-	const folder = app.vault.getAbstractFileByPath(normalizePath(path));
-	return folder instanceof TFolder ? folder : null;
 }
 
 /** Maps every file under `root` by its lowercased path relative to root. */
@@ -273,13 +271,8 @@ function indexFolder(app: App, root: string): Map<string, TFile> {
 function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
 	if (a.byteLength !== b.byteLength) return false;
 
-	const left = new Uint8Array(a);
 	const right = new Uint8Array(b);
-	for (let i = 0; i < left.length; i++) {
-		if (left[i] !== right[i]) return false;
-	}
-
-	return true;
+	return new Uint8Array(a).every((byte, index) => byte === right[index]);
 }
 
 /** PK\x03\x04 for a normal archive, PK\x05\x06 for an empty one. */

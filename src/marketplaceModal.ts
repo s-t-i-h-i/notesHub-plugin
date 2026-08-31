@@ -1,4 +1,4 @@
-import { ButtonComponent, Modal, Notice, Setting, TFolder } from 'obsidian';
+import { ButtonComponent, Modal, Notice, Setting, TFolder, normalizePath } from 'obsidian';
 import MarketplacePlugin from './main';
 import type { InstallRecord } from './settings';
 import {
@@ -14,7 +14,6 @@ import {
 	installPlan,
 	formatBytes,
 	planUpdate,
-	resolveInstall,
 	type PackagePlan,
 	type UpdatePlan,
 } from './installs';
@@ -174,8 +173,10 @@ class MarketplaceModal extends Modal {
 		const card = grid.createDiv({ cls: 'marketplace-card mod-clickable' });
 		card.createDiv({ cls: 'marketplace-card-title', text: pkg.title });
 		// On the card, not just in the detail view: otherwise an update could
-		// only be found by opening every package in turn.
-		if (this.isOutdated(pkg)) {
+		// only be found by opening every package in turn. Read straight from
+		// the record — the folder is resolved later, when it's a write target.
+		const installed = this.plugin.settings.installs[pkg.id];
+		if (installed && installed.version < pkg.version) {
 			card.createDiv({ cls: 'marketplace-badge', text: 'Update available' });
 		}
 		if (meta) card.createDiv({ cls: 'marketplace-card-meta', text: meta });
@@ -450,24 +451,24 @@ class MarketplaceModal extends Modal {
 	 * longer holds — the user may have deleted or renamed it. A stale record
 	 * is dropped rather than repaired: without it the package simply installs
 	 * fresh, which is the pre-update behaviour and always safe.
+	 *
+	 * Resolving through the vault index is also a security gate, not just a
+	 * staleness check: the path comes from data.json, which is hand-editable,
+	 * and it is a write target. The index only holds real in-vault paths, so
+	 * a ".." never resolves — normalizePath() would not have stripped it.
 	 */
 	private resolveInstalled(id: string): { folder: TFolder; record: InstallRecord } | null {
 		const record = this.plugin.settings.installs[id];
 		if (!record) return null;
 
-		const folder = resolveInstall(this.app, record.path);
-		if (folder === null) {
+		const folder = this.app.vault.getAbstractFileByPath(normalizePath(record.path));
+		if (!(folder instanceof TFolder)) {
 			delete this.plugin.settings.installs[id];
 			void this.plugin.saveSettings();
 			return null;
 		}
 
 		return { folder, record };
-	}
-
-	private isOutdated(pkg: Package): boolean {
-		const record = this.plugin.settings.installs[pkg.id];
-		return record !== undefined && record.version < pkg.version;
 	}
 
 	private failDownload(error: unknown, button: ButtonComponent) {

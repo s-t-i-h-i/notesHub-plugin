@@ -139,7 +139,6 @@ class PublishModal extends Modal {
 		);
 	}
 
-	/** Reads the package's text files and scans them for active content. */
 	/**
 	 * The account's own packages, to offer as update targets.
 	 *
@@ -160,6 +159,7 @@ class PublishModal extends Modal {
 		}
 	}
 
+	/** Reads the package's text files and scans them for active content. */
 	private async scanFiles(): Promise<Finding[]> {
 		const findings: Finding[] = [];
 
@@ -256,7 +256,7 @@ class PublishModal extends Modal {
 							? { title: target.title, description: target.description, tags: target.tags.join(', ') }
 							: { title: this.folder.name, description: '', tags: '' };
 
-						this.bodyEl.empty();
+						// renderForm() empties the body itself.
 						this.renderForm();
 					});
 				});

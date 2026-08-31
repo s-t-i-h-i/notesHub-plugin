@@ -42,16 +42,15 @@ export default class MarketplacePlugin extends Plugin {
 
 		// Copy only known keys instead of Object.assign: the API address used
 		// to be a setting, and an old data.json could still have that field.
-		// A blind copy would keep it around forever.
+		// A blind copy would keep it around forever. A new string setting
+		// belongs in this list, or it will never load.
 		this.settings = { ...DEFAULT_SETTINGS };
-		for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof MarketplaceSettings)[]) {
+		for (const key of ['token', 'username', 'userId', 'downloadFolder'] as const) {
 			const value = stored[key];
-			if (typeof value === 'string' && typeof DEFAULT_SETTINGS[key] === 'string') {
-				Object.assign(this.settings, { [key]: value });
-			}
+			if (typeof value === 'string') this.settings[key] = value;
 		}
 
-		// Kept out of the loop above rather than loosening it to "string or
+		// Listed separately rather than loosening the loop to "string or
 		// object": that would also let a hand-edited data.json put an object
 		// on `token`, and typeof [] is 'object' too.
 		this.settings.installs = readInstalls(stored.installs);
