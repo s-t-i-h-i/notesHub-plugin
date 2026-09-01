@@ -2,7 +2,7 @@ import { ButtonComponent, Modal, Notice, Setting, TFile, TFolder } from 'obsidia
 import MarketplacePlugin from './main';
 import { collectFiles, findBrokenLinks, findNameProblems, type BrokenLink } from './files';
 import { publishFolder } from './api/publishApi';
-import { fetchPackages, type Package } from './api/packagesApi';
+import { fetchPackages, MAX_IDS_PER_QUERY, type Package } from './api/packagesApi';
 import { UnauthorizedError } from './api/api';
 import { extensionOf, hasExif } from './verify';
 import type { Capability } from './policy/types';
@@ -145,8 +145,11 @@ class PublishModal extends Modal {
 		if (!userId) return [];
 
 		try {
-			const packages = await fetchPackages(this.plugin.settings);
-			return packages.filter((pkg) => pkg.authorId === userId);
+			// author_id and limit go to the server. Filtering one page client-side
+			// showed only packages that happened to be in the newest twenty, so an
+			// author with older ones could not offer them as update targets at all
+			// — and was quietly pushed into publishing duplicates instead.
+			return await fetchPackages(this.plugin.settings, { authorId: userId, limit: MAX_IDS_PER_QUERY });
 		} catch (error) {
 			console.error('Failed to fetch your packages', error);
 			return [];

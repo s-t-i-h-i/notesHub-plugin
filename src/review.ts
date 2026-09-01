@@ -67,11 +67,12 @@ export function renderManifest(parent: HTMLElement, findings: Finding[], context
 		renderCapability(list, capability, wording, matching, context);
 	}
 
-	if (context.restricted) {
+	if (context.noCommunityPlugins) {
+		// True whether that is restricted mode or simply a vault with none
+		// installed — and we cannot tell those apart, so we say the part we know.
 		parent.createDiv({
 			cls: 'marketplace-detail-desc',
-			// Worth saying plainly: it is the cheapest protection they already have.
-			text: 'Restricted mode is on, so no community plugin runs in this vault — most of the above is inactive here.',
+			text: 'No community plugins are enabled in this vault, so anything above that needs one will not run here.',
 		});
 	}
 

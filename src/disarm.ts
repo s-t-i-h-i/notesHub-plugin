@@ -29,8 +29,13 @@ import { interpreterFor, selfStartingFences } from './policy/interpreters';
 /** Appended to a fence language so no interpreter matches it. */
 const DISARM_SUFFIX = '-off';
 
-/** Attribute name a disarmed remote source is parked under. */
-const OFF_ATTR = 'data-off-src';
+/** Attributes that name the remote document an embed would load. */
+const REMOTE_ATTRS = ['src', 'data'];
+
+/** Where a disarmed remote source is parked. */
+function offAttr(attr: string): string {
+	return `data-off-${attr}`;
+}
 
 interface Edit {
 	from: number;
@@ -113,12 +118,17 @@ function collect(text: string, direction: 'disarm' | 'arm'): Edit[] {
 	for (const tag of scanTags(document.prose)) {
 		if (tag.name !== 'iframe' && tag.name !== 'object' && tag.name !== 'embed') continue;
 
-		const from = direction === 'disarm' ? 'src' : OFF_ATTR;
-		const to = direction === 'disarm' ? OFF_ATTR : 'src';
-		if (!tag.attrs.has(from)) continue;
+		// <object> names its resource in `data`, not `src`. Parking only `src`
+		// left the one tag whose attribute differs completely unprotected — and
+		// forward defense that misses the actual attribute is not defense.
+		for (const attr of REMOTE_ATTRS) {
+			const from = direction === 'disarm' ? attr : offAttr(attr);
+			const to = direction === 'disarm' ? offAttr(attr) : attr;
+			if (!tag.attrs.has(from)) continue;
 
-		const at = attributeSpan(text, tag.offset, tag.raw, from);
-		if (at !== null) edits.push({ from: at.from, to: at.to, text: to });
+			const at = attributeSpan(text, tag.offset, tag.raw, from);
+			if (at !== null) edits.push({ from: at.from, to: at.to, text: to });
+		}
 	}
 
 	return edits;
@@ -138,10 +148,14 @@ function disarmedLang(fence: Fence): string | null {
 function armedLang(fence: Fence): string | null {
 	if (!fence.lang.endsWith(DISARM_SUFFIX)) return null;
 
+	// The same test disarmedLang() applies, not a looser one. interpreterFor()
+	// answers with a synthesized "unrecognised block" for any language it does
+	// not know, so asking merely whether it returns something would strip the
+	// suffix off a reader's own ```mynotes-off fence that disarm never created.
 	const original = fence.lang.slice(0, -DISARM_SUFFIX.length);
-	// Only switch on something we switched off: a language that happens to end
-	// in "-off" on its own is left alone.
-	return interpreterFor(original) === null ? null : original;
+	const interpreter = interpreterFor(original);
+
+	return interpreter !== null && interpreter.trigger === 'render' && interpreter.js ? original : null;
 }
 
 /** Where the language token sits on a fence's opening line. */

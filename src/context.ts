@@ -15,8 +15,16 @@
 import type { App } from 'obsidian';
 
 export interface VaultContext {
-	/** Restricted mode: no community plugin runs, so most of a manifest is inert here. */
-	restricted: boolean;
+	/**
+	 * No community plugin is switched on in this vault.
+	 *
+	 * Deliberately NOT called "restricted mode". Restricted mode produces this
+	 * state, but so does a fresh vault and one that only uses core plugins, and
+	 * there is no documented way to tell them apart. Naming it after what we can
+	 * actually observe keeps the sentence we show from being confidently wrong
+	 * for a very common setup.
+	 */
+	noCommunityPlugins: boolean;
 	/** Ids of the community plugins currently switched on. */
 	enabled: Set<string>;
 	/** False when the app didn't tell us — then we say nothing rather than guess. */
@@ -52,11 +60,9 @@ export function readContext(app: App): VaultContext {
 	const plugins = (app as unknown as { plugins?: { enabledPlugins?: Set<string> } }).plugins;
 	const enabled = plugins?.enabledPlugins;
 
-	if (!(enabled instanceof Set)) return { restricted: false, enabled: new Set(), known: false };
+	if (!(enabled instanceof Set)) return { noCommunityPlugins: false, enabled: new Set(), known: false };
 
-	// Restricted mode switches every community plugin off at once, which is
-	// also a suggestion worth making to someone who only wants to read.
-	return { restricted: enabled.size === 0, enabled, known: true };
+	return { noCommunityPlugins: enabled.size === 0, enabled, known: true };
 }
 
 /**

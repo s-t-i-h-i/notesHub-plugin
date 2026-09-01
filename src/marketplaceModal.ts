@@ -8,6 +8,7 @@ import {
 	fetchPackage,
 	fetchPackages,
 	fetchTags,
+	MAX_IDS_PER_QUERY,
 	type SortKey,
 } from './api/packagesApi';
 import {
@@ -218,24 +219,31 @@ export class MarketplaceModal extends Modal {
 		const ids = this.packages.map((pkg) => pkg.id);
 		if (ids.length === 0) return;
 
-		let current: Package[];
+		const current: Package[] = [];
 		try {
-			current = await fetchPackages(this.plugin.settings, { ids });
+			// The server caps an ?ids= lookup and does not say so, so the tail of a
+			// longer list would come back absent — and absent is rendered as
+			// "No longer published", which is alarming and wrong.
+			for (let from = 0; from < ids.length; from += MAX_IDS_PER_QUERY) {
+				current.push(...(await fetchPackages(this.plugin.settings, { ids: ids.slice(from, from + MAX_IDS_PER_QUERY) })));
+			}
 		} catch (error) {
 			console.error(error);
 			return;
 		}
+
+		// The user may have switched tabs while this was in flight. Checked before
+		// the assignments, not after: writing stale enrichment into this.packages
+		// and then declining to repaint still leaves the wrong data behind.
+		if (!grid.isConnected) return;
 
 		const byId = new Map(current.map((pkg) => [pkg.id, pkg]));
 		// The server's copy carries the real version, description and tags.
 		this.packages = this.packages.map((pkg) => byId.get(pkg.id) ?? pkg);
 		this.orphans = new Set(ids.filter((id) => !byId.has(id)));
 
-		// The user may have switched tabs while this was in flight.
-		if (grid.isConnected) {
-			grid.empty();
-			this.paintCards(grid);
-		}
+		grid.empty();
+		this.paintCards(grid);
 	}
 
 	// --- shared rendering ---

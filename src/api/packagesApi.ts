@@ -94,6 +94,15 @@ export async function fetchPackage(
 	return toPackage(response.json);
 }
 
+/**
+ * How many ids one /packages lookup answers.
+ *
+ * The server truncates the list to this and never says it did, so asking for
+ * more silently loses the tail — which reads downstream as "no longer
+ * published". Callers with more ids than this have to ask more than once.
+ */
+export const MAX_IDS_PER_QUERY = 100;
+
 /** How the catalog is sorted. The server owns the ordering, so these names are its vocabulary. */
 export type SortKey = 'newest' | 'oldest' | 'title';
 

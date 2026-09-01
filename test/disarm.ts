@@ -46,6 +46,23 @@ check('a block quoted inside a code sample is left alone', disarm(sample) === sa
 const python = "```python\nprint('hi')\n```";
 check('an ordinary code sample is left alone', disarm(python) === python);
 
+console.log('\n--- arm touches only what disarm made ---');
+// interpreterFor() answers with a synthesized "unrecognised block" for any
+// language it does not know, so a looser test here rewrote fences the reader
+// wrote themselves.
+const mine = '```mynotes-off\nnot ours\n```';
+check('a reader\'s own -off fence is left alone', arm(mine) === mine, `-> ${JSON.stringify(arm(mine))}`);
+check('an inert language ending in -off is left alone', arm('```python-off\nx\n```') === '```python-off\nx\n```');
+check('but our own suffix is still removed', arm(disarm(DV)) === DV);
+
+console.log('\n--- object carries its url in data, not src ---');
+const obj = '<object data="https://a.example.com/x"></object>';
+check('object data is parked', disarm(obj).includes('data-off-data="https://a.example.com/x"'));
+check('object round-trips', arm(disarm(obj)) === obj);
+const emb = '<embed src="https://a.example.com/x">';
+check('embed src is parked', disarm(emb).includes('data-off-src='));
+check('embed round-trips', arm(disarm(emb)) === emb);
+
 console.log('\n--- exact inverse ---');
 const notes = [
 	DV,
