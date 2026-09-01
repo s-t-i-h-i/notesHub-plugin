@@ -1,5 +1,8 @@
-/** Extensions allowed both when packing and unpacking — one shared list for both. */
-export const ALLOWED_EXTENSIONS = ['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+// One list for packing and unpacking, and the same one the worker enforces —
+// it lives in verify.ts because that is the file shared with the backend.
+// "may send less than may be written" is always a bug, even when one person
+// writes both ends.
+export { ALLOWED_EXTENSIONS } from './verify';
 
 /**
  * The marketplace server address, injected by esbuild's `define` (see
@@ -25,7 +28,7 @@ export const MAX_PUBLISH_BYTES = 50 * 1024 * 1024;
 
 // --- archive limits when downloading ---
 
-/** Max size of the ZIP file itself. The server caps at 50 MB; this leaves headroom. */
+/** Max size of the archive itself. The server caps at 50 MB; this leaves headroom. */
 export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 
 /** Max bytes allowed on disk after unpacking. Without this, a 204 KB archive could unpack to 200 MB. */
@@ -39,11 +42,26 @@ export const MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024;
  */
 export const MAX_COMPRESSION_RATIO = 100;
 
+/**
+ * Max size of one file inside a package.
+ *
+ * Not covered by MAX_UNCOMPRESSED_BYTES: a single file just under that total
+ * passes the running check and is then allocated in one piece. The worker
+ * enforces the same number — "may send less than may be written" is always a bug.
+ */
+export const MAX_ENTRY_BYTES = 16 * 1024 * 1024;
+
 /** Max number of files, matching the limit the worker enforces. */
 export const MAX_ENTRIES = 2000;
 
-/** Max path length inside a package. Windows breaks around 260 characters. */
-export const MAX_ENTRY_PATH = 400;
+/**
+ * Max path length inside a package.
+ *
+ * 255 is what a ustar name and prefix field hold together. Anything longer
+ * exists in tar only as a GNU or PAX record, and those are refused — a second
+ * way to spell one filename is the ambiguity we left ZIP to escape.
+ */
+export const MAX_ENTRY_PATH = 255;
 
 /** Max folder nesting depth. 300 levels isn't a course structure, it's an attack. */
 export const MAX_ENTRY_DEPTH = 32;

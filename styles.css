@@ -64,6 +64,16 @@
 	margin-bottom: var(--size-2-2);
 }
 
+.marketplace-badge {
+	align-self: flex-start;
+	margin-top: var(--size-2-1);
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-size: var(--font-smaller);
+}
+
 .marketplace-card-desc {
 	font-size: var(--font-ui-small);
 	color: var(--text-normal);
@@ -195,5 +205,107 @@
 	font-size: var(--font-ui-smaller);
 	white-space: pre-wrap;
 	word-break: break-all;
+	color: var(--text-muted);
+}
+
+/* Tabs. The strip lives inside the re-rendered body, so the detail and
+   confirm views get no tabs without any extra view state. */
+.marketplace-tabs {
+	display: flex;
+	gap: var(--size-4-4);
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin-bottom: var(--size-4-3);
+}
+
+.marketplace-tab {
+	padding: var(--size-4-2) 0;
+	cursor: pointer;
+	color: var(--text-muted);
+	/* Transparent rather than absent, so the active state doesn't shift the row. */
+	border-bottom: 2px solid transparent;
+}
+
+.marketplace-tab:hover {
+	color: var(--text-normal);
+}
+
+.marketplace-tab.is-active {
+	color: var(--text-normal);
+	border-bottom-color: var(--interactive-accent);
+}
+
+/* Empty and error states. */
+.marketplace-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-9) var(--size-4-4);
+	text-align: center;
+}
+
+.marketplace-empty-icon {
+	color: var(--text-faint);
+}
+
+.marketplace-empty-icon svg {
+	width: 32px;
+	height: 32px;
+}
+
+.marketplace-empty-title {
+	color: var(--text-normal);
+}
+
+.marketplace-empty-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+/* The infinite-scroll trigger. It needs real height — a zero-height element
+   never intersects, so the observer would never fire. */
+.marketplace-sentinel {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--size-4-2);
+	min-height: 40px;
+	padding: var(--size-4-3);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+/* An installed package the catalog no longer carries. Muted, not a warning:
+   nothing is broken, the files are still there. */
+.marketplace-badge.mod-muted {
+	background-color: var(--background-modifier-border);
+	color: var(--text-muted);
+}
+
+/* A switched-off code block: its own code, what it would do, and the button. */
+.marketplace-disarmed {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	overflow: hidden;
+}
+
+.marketplace-disarmed pre {
+	margin: 0;
+	border-radius: 0;
+}
+
+.marketplace-disarmed-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75em;
+	flex-wrap: wrap;
+	padding: 0.5em 0.75em;
+	background-color: var(--background-secondary);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.marketplace-disarmed-label {
+	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
 }

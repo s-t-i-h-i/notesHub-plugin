@@ -1,9 +1,10 @@
 import { App, TFile, TFolder } from 'obsidian';
-import JSZip from 'jszip';
+import { writeTarGz } from '../tar';
 import { apiRequest } from './api';
 import { MAX_PUBLISH_BYTES } from '../constants';
 import { formatBytes } from '../installs';
 import type { MarketplaceSettings } from '../settings';
+import type { Capability } from '../policy/types';
 
 export interface PublishMetadata {
 	title: string;
@@ -16,6 +17,10 @@ export interface PublishMetadata {
  *
  * `files` was already validated by openPublishModal(), so this publishes
  * exactly the set of files that passed link validation.
+ *
+ * With `packageId` the server replaces that package instead of creating a
+ * new one, keeping its id and bumping its version. Ownership is checked
+ * server-side from the token; passing an id you don't own is a 403.
  */
 export async function publishFolder(
 	app: App,
@@ -23,11 +28,10 @@ export async function publishFolder(
 	files: TFile[],
 	metadata: PublishMetadata,
 	settings: MarketplaceSettings,
-): Promise<void> {
+	packageId?: string,
+): Promise<Capability[]> {
 	// the vault root's path is "/", so there's no prefix to strip in that case
 	const prefix = folder.isRoot() ? '' : folder.path + '/';
-	// these exact paths go into the ZIP, so the web preview won't lie
-	const structure = files.map((file) => file.path.slice(prefix.length));
 
 	const archive = await packFolder(app, files, prefix);
 
@@ -41,30 +45,38 @@ export async function publishFolder(
 		);
 	}
 
-	await upload(archive, `${folder.name}.zip`, metadata, structure, settings);
+	// What the catalog will say about this package, worked out by the server on
+	// the bytes it actually received. The plugin used to guess at this before
+	// uploading, with a second copy of the analyser; the real answer costs
+	// nothing extra because the response was already coming back.
+	return upload(archive, `${folder.name}.tar.gz`, metadata, settings, packageId);
 }
 
-async function packFolder(
-	app: App,
-	files: TFile[],
-	prefix: string,
-): Promise<ArrayBuffer> {
-	const zip = new JSZip();
+/**
+ * Packs the folder as tar.gz.
+ *
+ * Not ZIP: ZIP writes every entry name twice, in the central directory and
+ * again in the local header, and nothing makes the two agree — so the worker
+ * and the plugin's unpacker could read the same archive as two different sets
+ * of files. Tar writes each name once.
+ */
+async function packFolder(app: App, files: TFile[], prefix: string): Promise<ArrayBuffer> {
+	const entries = [];
 
 	for (const file of files) {
-		zip.file(file.path.slice(prefix.length), await app.vault.readBinary(file));
+		entries.push({ name: file.path.slice(prefix.length), data: new Uint8Array(await app.vault.readBinary(file)) });
 	}
 
-	return zip.generateAsync({ type: 'arraybuffer' });
+	return (await writeTarGz(entries)).buffer as ArrayBuffer;
 }
 
 async function upload(
 	archive: ArrayBuffer,
 	filename: string,
 	metadata: PublishMetadata,
-	structure: string[],
 	settings: MarketplaceSettings,
-): Promise<void> {
+	packageId?: string,
+): Promise<Capability[]> {
 	const boundary = randomBoundary();
 	const body = buildMultipartBody(
 		boundary,
@@ -72,7 +84,8 @@ async function upload(
 			title: metadata.title,
 			description: metadata.description,
 			tags: metadata.tags.join(','),
-			structure: JSON.stringify(structure),
+			// An empty id means "new package", so the field is always safe to send.
+			id: packageId ?? '',
 			// no "author" field — the server derives it from the token
 		},
 		filename,
@@ -82,13 +95,17 @@ async function upload(
 	// The token goes in a header, never a form field: field values land in
 	// the multipart body unquoted and unescaped, so a secret has no
 	// business being there.
-	await apiRequest(settings, {
+	const response = await apiRequest(settings, {
 		path: '/publish',
 		method: 'POST',
 		contentType: `multipart/form-data; boundary=${boundary}`,
 		body,
 		auth: true,
 	});
+
+	const capabilities = (response.json as { capabilities?: unknown })?.capabilities;
+
+	return Array.isArray(capabilities) ? (capabilities.filter((entry) => typeof entry === 'string') as Capability[]) : [];
 }
 
 /**
@@ -119,6 +136,14 @@ function buildMultipartBody(
 	const parts: Uint8Array[] = [];
 
 	for (const [name, value] of Object.entries(fields)) {
+		// Field values go into the body raw, so a value containing the
+		// boundary could close its part early and append fields of its own.
+		// A random boundary makes that astronomically unlikely; this makes it
+		// impossible, for every field at once instead of per caller.
+		if (value.includes(boundary)) {
+			throw new Error(`Cannot send the "${name}" field: it collides with the request boundary`);
+		}
+
 		parts.push(
 			encoder.encode(
 				`--${boundary}\r\n` +

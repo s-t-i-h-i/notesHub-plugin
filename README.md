@@ -11,6 +11,7 @@ Notes Hub is meant to be the first public, community-built collection of notes f
 ## Features
 
 - **Publish a folder as a package.** Right-click any folder and select *Publish* to package it and upload it.
+- **Update packages.** Downloaded packages can be updated in place without losing your local notes. Authors can publish updates to their existing packages.
 - **Broken link detection.** Before publishing, the plugin checks for links pointing outside the selected folder or to notes that don't exist, so you don't accidentally ship broken references.
 - **Content review before download.** Downloaded packages are scanned for active content (embedded scripts, dataviewjs blocks, Templater syntax, and similar) and flagged before installation. You decide whether to proceed.
 - **Vault isolation.** Downloaded packages are extracted into their own folder. They don't spill tags, queries, or files into the rest of your vault.
@@ -52,6 +53,20 @@ Only Markdown files, canvases, and images inside the folder are included. Hidden
 
 The package is extracted into a new, isolated folder in your vault, named after the package. Your existing notes, tags, and settings are left untouched.
 
+### Update a downloaded package
+
+1. Run the **Open Notes Hub** command.
+2. Packages with newer versions will display an **Update available** badge.
+3. Select one and click **Update (vX → vY)**.
+4. Review the changes (new, replaced, or unchanged files). If you modified any package files locally, they will be moved to the trash before being replaced.
+5. Click **Update** to confirm.
+
+### Update a published package
+
+1. Right-click a folder in the file explorer and select **Publish**.
+2. From the **Publish as** dropdown, select the package you want to update (it will pre-fill the form with its current title, description, and tags).
+3. Review warnings and click **Publish update**. The package keeps its ID and its version is bumped.
+
 ## Settings
 
 | Setting | Description |
@@ -71,7 +86,6 @@ The package is extracted into a new, isolated folder in your vault, named after 
 ## Known limitations
 
 - This is an MVP early release. More features and improvements are on the way.
-- There is currently no way to edit a published package — delete it and publish again.
 
 ## Contributing
 

@@ -1,11 +1,14 @@
 import { Plugin, TFolder } from 'obsidian';
+import type { Capability } from './policy/types';
 import {
 	DEFAULT_SETTINGS,
+	InstallRecord,
 	MarketplaceSettings,
 	MarketplaceSettingTab,
 } from './settings';
 import { openPublishModal } from './publishModal';
 import { openMarketplaceModal } from './marketplaceModal';
+import { registerDisarmedBlocks } from './armView';
 
 export default class MarketplacePlugin extends Plugin {
 	settings!: MarketplaceSettings;
@@ -33,6 +36,11 @@ export default class MarketplacePlugin extends Plugin {
 			}),
 		);
 
+		// Downloaded packages install with anything that would start on its own
+		// switched off. These claim the "-off" languages so a disabled block
+		// renders as its own code plus a button, rather than as a grey box.
+		registerDisarmedBlocks(this);
+
 		this.addSettingTab(new MarketplaceSettingTab(this.app, this));
 	}
 
@@ -41,15 +49,60 @@ export default class MarketplacePlugin extends Plugin {
 
 		// Copy only known keys instead of Object.assign: the API address used
 		// to be a setting, and an old data.json could still have that field.
-		// A blind copy would keep it around forever.
+		// A blind copy would keep it around forever. A new string setting
+		// belongs in this list, or it will never load.
 		this.settings = { ...DEFAULT_SETTINGS };
-		for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof MarketplaceSettings)[]) {
+		for (const key of ['token', 'username', 'userId', 'downloadFolder'] as const) {
 			const value = stored[key];
 			if (typeof value === 'string') this.settings[key] = value;
 		}
+
+		// Listed separately rather than loosening the loop to "string or
+		// object": that would also let a hand-edited data.json put an object
+		// on `token`, and typeof [] is 'object' too.
+		this.settings.installs = readInstalls(stored.installs);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
+}
+
+/**
+ * Validates the install records read from data.json.
+ *
+ * That file is hand-editable, and these records point at folders we later
+ * write into, so this is a trust boundary rather than a formality. NaN is
+ * the dangerous shape: `mtime > NaN` is false, so every file would look
+ * untouched and the branch that rescues the user's edits would never fire.
+ */
+function readInstalls(value: unknown): Record<string, InstallRecord> {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+
+	const installs: Record<string, InstallRecord> = {};
+	for (const [id, raw] of Object.entries(value as Record<string, unknown>)) {
+		const record = raw as Partial<InstallRecord> | null;
+		if (typeof record?.path !== 'string' || !record.path) continue;
+		if (!Number.isFinite(record.version) || !Number.isFinite(record.installedAt)) continue;
+
+		installs[id] = {
+			path: record.path,
+			version: record.version as number,
+			installedAt: record.installedAt as number,
+			// Absent on records written before the Downloaded tab existed, and
+			// defaulted rather than rejected: a missing label is a blank card,
+			// not a reason to forget where a package is installed.
+			title: typeof record.title === 'string' ? record.title : '',
+			author: typeof record.author === 'string' ? record.author : '',
+			// An unreadable or absent list reads as "nothing was agreed to",
+			// so the next update asks again. Erring towards asking is the only
+			// safe direction here.
+			capabilities: Array.isArray(record.capabilities)
+				? record.capabilities.filter((entry): entry is Capability => typeof entry === 'string')
+				: [],
+			authorId: typeof record.authorId === 'string' ? record.authorId : '',
+		};
+	}
+
+	return installs;
 }

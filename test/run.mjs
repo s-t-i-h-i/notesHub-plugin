@@ -1,27 +1,48 @@
 /**
- * Renders the settings tab headlessly against the stub in obsidian-stub.js.
+ * Runs the headless checks against the stub in obsidian-stub.js.
  *
- * `tsc` cannot see either failure this catches: a component referenced inside
- * its own Setting chain (temporal dead zone, which takes the whole tab down at
- * runtime), and a button that quietly stopped being rendered. Bundling happens
- * through esbuild's API rather than a shell one-liner so the __API_BASE_URL__
- * define doesn't have to survive shell quoting.
+ * `tsc` cannot see any of the failures these catch: a component referenced
+ * inside its own Setting chain (temporal dead zone, which takes the whole tab
+ * down at runtime), a button that quietly stopped being rendered, or an
+ * update that overwrites the user's edits instead of trashing them first.
+ * Bundling happens through esbuild's API rather than a shell one-liner so the
+ * __API_BASE_URL__ define doesn't have to survive shell quoting.
  */
 import esbuild from 'esbuild';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-const outfile = join(tmpdir(), `notes-hub-uitest-${process.pid}.mjs`);
+const entryPoints = ['test/settings-render.ts', 'test/update-plan.ts', 'test/list-query.ts', 'test/install-record.ts', 'test/disarm.ts'];
+let failed = false;
 
-await esbuild.build({
-	entryPoints: ['test/settings-render.ts'],
-	bundle: true,
-	platform: 'node',
-	format: 'esm',
-	outfile,
-	alias: { obsidian: './test/obsidian-stub.js' },
-	define: { __API_BASE_URL__: JSON.stringify('http://127.0.0.1:8787') },
-});
+for (const entryPoint of entryPoints) {
+	const name = entryPoint.split('/').pop().replace(/\.ts$/, '');
+	const outfile = join(tmpdir(), `notes-hub-uitest-${name}-${process.pid}.mjs`);
 
-await import(pathToFileURL(outfile).href);
+	try {
+		await esbuild.build({
+			entryPoints: [entryPoint],
+			bundle: true,
+			platform: 'node',
+			format: 'esm',
+			outfile,
+			alias: { obsidian: './test/obsidian-stub.js' },
+			define: { __API_BASE_URL__: JSON.stringify('http://127.0.0.1:8787') },
+		});
+	} catch (err) {
+		// Caught rather than thrown: an unbundlable check would otherwise take
+		// the runner down and hide every check queued behind it.
+		console.log(`\n===== ${name} =====\nBUILD FAILED: ${err.message}`);
+		failed = true;
+		continue;
+	}
+
+	console.log(`\n===== ${name} =====`);
+	// A child process per check, not an import: each one ends with
+	// process.exit(), which would take the runner down with it.
+	const result = spawnSync(process.execPath, [outfile], { stdio: 'inherit' });
+	if (result.status !== 0) failed = true;
+}
+
+process.exit(failed ? 1 : 0);

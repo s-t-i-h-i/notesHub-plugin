@@ -5,6 +5,41 @@ import { assertSafeApiUrl, TOKEN_RE, UnauthorizedError } from './api/api';
 import { API_BASE_URL } from './constants';
 import { closeAccount, fetchMe, revokeToken } from './api/accountApi';
 import { armButton } from './ui';
+import type { Capability } from './policy/types';
+
+/** What a downloaded package left in the vault, so an update knows where to write. */
+export interface InstallRecord {
+	/** Folder the package was written to. Re-resolved before every write — the user can move or delete it. */
+	path: string;
+	/** Package version at the time of writing, compared against the catalog to offer an update. */
+	version: number;
+	/**
+	 * When the files were written, taken AFTER the last write. Anything with a
+	 * newer mtime was touched by the user, not by us.
+	 */
+	installedAt: number;
+	/**
+	 * Cached label for the Downloaded tab, which renders from these records
+	 * alone so it works offline and still lists a package the server dropped.
+	 * Not the description: 5000 characters per record in a file read at every
+	 * start, for text the card clamps to three lines anyway.
+	 */
+	title: string;
+	author: string;
+	/**
+	 * The capability set the reader accepted when they installed this.
+	 *
+	 * An update re-asks only when this grows. Showing the whole manifest again
+	 * says nothing new — they already agreed to it — while a version that
+	 * quietly adds network access is exactly what needs to stop them.
+	 */
+	capabilities: Capability[];
+	/**
+	 * Owner at install time. A package changing hands between versions is not
+	 * an update, and an update is not the moment to find that out silently.
+	 */
+	authorId: string;
+}
 
 export interface MarketplaceSettings {
 	/** Access token. The publish author comes from this, never from a form field. */
@@ -14,13 +49,22 @@ export interface MarketplaceSettings {
 	/** Compared against a package's author_id to show "Delete" only on your own packages. */
 	userId: string;
 	downloadFolder: string;
+	/**
+	 * Installed packages, keyed by package id — not by folder path. A path key
+	 * would need a vault rename handler to stay correct, and renaming a PARENT
+	 * folder fires one event while silently repathing every child, so exact-key
+	 * matching would miss them all. Keyed by id, a rename just makes the record
+	 * unresolvable, which degrades to a plain fresh install.
+	 */
+	installs: Record<string, InstallRecord>;
 }
 
 export const DEFAULT_SETTINGS: MarketplaceSettings = {
 	token: '',
 	username: '',
 	userId: '',
-	downloadFolder: 'marketplace-downloads'
+	downloadFolder: 'marketplace-downloads',
+	installs: {},
 };
 
 export class MarketplaceSettingTab extends PluginSettingTab {

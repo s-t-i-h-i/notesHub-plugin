@@ -9,7 +9,8 @@
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
 		"lint": "eslint .",
-		"uitest": "node test/run.mjs"
+		"sync-policy": "node scripts/sync-policy.mjs sync",
+		"uitest": "node scripts/sync-policy.mjs && node test/run.mjs"
 	},
 	"keywords": [],
 	"license": "0-BSD",
@@ -24,8 +25,5 @@
 		"obsidian": "latest",
 		"typescript": "^5.8.3",
 		"typescript-eslint": "^8.59.1"
-	},
-	"dependencies": {
-		"jszip": "^3.10.1"
 	}
 }
