@@ -1,4 +1,5 @@
 import { Plugin, TFolder } from 'obsidian';
+import type { Capability } from './policy/types';
 import {
 	DEFAULT_SETTINGS,
 	InstallRecord,
@@ -7,6 +8,7 @@ import {
 } from './settings';
 import { openPublishModal } from './publishModal';
 import { openMarketplaceModal } from './marketplaceModal';
+import { registerDisarmedBlocks } from './armView';
 
 export default class MarketplacePlugin extends Plugin {
 	settings!: MarketplaceSettings;
@@ -33,6 +35,11 @@ export default class MarketplacePlugin extends Plugin {
 				);
 			}),
 		);
+
+		// Downloaded packages install with anything that would start on its own
+		// switched off. These claim the "-off" languages so a disabled block
+		// renders as its own code plus a button, rather than as a grey box.
+		registerDisarmedBlocks(this);
 
 		this.addSettingTab(new MarketplaceSettingTab(this.app, this));
 	}
@@ -87,6 +94,13 @@ function readInstalls(value: unknown): Record<string, InstallRecord> {
 			// not a reason to forget where a package is installed.
 			title: typeof record.title === 'string' ? record.title : '',
 			author: typeof record.author === 'string' ? record.author : '',
+			// An unreadable or absent list reads as "nothing was agreed to",
+			// so the next update asks again. Erring towards asking is the only
+			// safe direction here.
+			capabilities: Array.isArray(record.capabilities)
+				? record.capabilities.filter((entry): entry is Capability => typeof entry === 'string')
+				: [],
+			authorId: typeof record.authorId === 'string' ? record.authorId : '',
 		};
 	}
 

@@ -14,6 +14,7 @@ import {
 	applyUpdate,
 	inspectArchive,
 	installPlan,
+	findShadowedNotes,
 	formatBytes,
 	planUpdate,
 	type PackagePlan,
@@ -21,7 +22,9 @@ import {
 } from './installs';
 import { UnauthorizedError } from './api/api';
 import { armButton } from './ui';
-import { renderFindings, renderConfirmRow } from './review';
+import { renderManifest, renderConfirmRow } from './review';
+import { readContext } from './context';
+import { POLICY_VERSION, type Finding } from './policy/types';
 
 const SORT_LABELS: Record<SortKey, string> = {
 	newest: 'Newest',
@@ -572,6 +575,14 @@ export class MarketplaceModal extends Modal {
 
 	// --- actions ---
 
+	/** A dead end with a reason, for the cases where continuing is not on offer. */
+	private refuse(pkg: Package, reason: string) {
+		this.clearBody();
+		this.bodyEl.createEl('h3', { text: pkg.title });
+		this.bodyEl.createDiv({ cls: 'marketplace-finding marketplace-finding-danger', text: reason });
+		new Setting(this.bodyEl).addButton((button) => button.setButtonText('Back').setCta().onClick(() => void this.showDetail(pkg)));
+	}
+
 	private async download(pkg: Package, button: ButtonComponent) {
 		// Disable immediately: the download takes time, and three clicks
 		// would create three copies.
@@ -579,7 +590,16 @@ export class MarketplaceModal extends Modal {
 		button.setButtonText('Downloading...');
 
 		try {
-			const archive = await downloadPackageArchive(this.plugin.settings, pkg.id);
+			// Withdrawn after the fact. The server answers 410 anyway; saying so
+			// here means the reason reaches the reader instead of an HTTP code.
+			if (pkg.revoked) {
+				this.refuse(pkg, 'This package was withdrawn as malicious. If you have it installed, delete the folder.');
+				return;
+			}
+
+			// The digest ties these bytes to the row the catalog described. Without
+			// it the manifest shown a moment ago could belong to another archive.
+			const archive = await downloadPackageArchive(this.plugin.settings, pkg.id, pkg.sha256);
 			// Validation and writing are separate steps because a
 			// confirmation prompt can sit between them. No file exists in
 			// the vault until this point.
@@ -589,22 +609,25 @@ export class MarketplaceModal extends Modal {
 			// fresh install into a new folder, exactly as before.
 			const installed = this.resolveInstalled(pkg.id);
 			if (installed !== null) {
+				// A package changing hands between versions is not an update,
+				// and an update is not the moment to find that out silently.
+				const owner = this.plugin.settings.installs[pkg.id]?.authorId ?? '';
+				if (owner !== '' && pkg.authorId !== '' && owner !== pkg.authorId) {
+					this.refuse(pkg, `This package now belongs to a different account (${pkg.author}). Updating it would install someone else's files.`);
+					return;
+				}
+
 				const update = await planUpdate(
 					this.app,
-					plan,
+					archive,
 					installed.folder.path,
 					installed.record.installedAt,
 				);
-				this.confirmUpdate(pkg, plan, update, button);
+				this.confirmUpdate(pkg, archive, update, button);
 				return;
 			}
 
-			if (plan.findings.length > 0) {
-				this.confirmInstall(pkg, plan, button);
-				return;
-			}
-
-			await this.write(pkg, plan, button);
+			this.confirmInstall(pkg, archive, plan, button);
 		} catch (error) {
 			this.failDownload(error, button);
 		}
@@ -618,24 +641,67 @@ export class MarketplaceModal extends Modal {
 	 * block or Templater command runs with the app's full permissions. The
 	 * user needs to see this before the write happens, not after.
 	 */
-	private confirmInstall(pkg: Package, plan: PackagePlan, button: ButtonComponent) {
+	private confirmInstall(pkg: Package, archive: ArrayBuffer, plan: PackagePlan, button: ButtonComponent) {
 		this.clearBody();
-		this.bodyEl.createEl('h3', { text: `Review contents: ${pkg.title}` });
+		this.bodyEl.createEl('h3', { text: `Install: ${pkg.title}` });
 		this.bodyEl.createDiv({
 			cls: 'marketplace-detail-desc',
-			text:
-				`This package has ${plan.files.length} files (${formatBytes(plan.totalBytes)}) and contains content ` +
-				'that may execute or connect to the network when a note is opened. ' +
-				'Only install from an author you trust.',
+			text: `${plan.paths.length} files, ${formatBytes(plan.totalBytes)}.`,
 		});
 
-		renderFindings(this.bodyEl, plan.findings);
+		const shadowed = findShadowedNotes(this.app, plan.paths);
+		if (shadowed.length > 0) {
+			// Obsidian resolves [[Note]] by name across the whole vault, so
+			// these would capture links in the reader's own notes.
+			const row = this.bodyEl.createDiv({ cls: 'marketplace-finding marketplace-finding-warning' });
+			row.createDiv({ cls: 'marketplace-finding-label', text: 'Some note names are already used in your vault' });
+			row.createDiv({ cls: 'marketplace-finding-path', text: shadowed.slice(0, 10).join(', ') });
+			row.createDiv({
+				cls: 'marketplace-finding-path',
+				text: 'Your existing [[links]] to those names may start pointing at this package instead.',
+			});
+		}
+
+		const findings = describedBy(pkg);
+		renderManifest(this.bodyEl, findings, readContext(this.app));
+
+		// Not a warning to click past: it says what will actually happen. The
+		// files arrive whole and readable, and nothing in them starts until
+		// the reader switches it on.
+		if (findings.some((found) => found.trigger === 'render')) {
+			this.bodyEl.createDiv({
+				cls: 'marketplace-detail-desc',
+				text:
+					'Anything that would run on its own is installed switched off. The code stays in the notes, ' +
+					'and each block has a button to turn it on once you have read it.',
+			});
+		}
+
+		if (pkg.policyVersion === 0) {
+			// "Not described" must never look like "nothing to report".
+			this.bodyEl.createDiv({
+				cls: 'marketplace-detail-desc',
+				text: 'The server has not described this package, so nothing above is a complete picture.',
+			});
+		} else if (pkg.policyVersion > POLICY_VERSION) {
+			// Plugins update on their own schedule, so running behind the
+			// server is normal — but then this plugin switches off fewer kinds
+			// of block than the description above accounts for, and only it
+			// knows that.
+			this.bodyEl.createDiv({
+				cls: 'marketplace-detail-desc',
+				text:
+					'This package was described by a newer version of the checker than your plugin has. ' +
+					'Update the plugin before installing — some of the above may not be switched off correctly.',
+			});
+		}
 
 		renderConfirmRow(
 			this.bodyEl,
-			'I understand, download anyway',
-			() => void this.write(pkg, plan, button),
+			'Install',
+			() => void this.write(pkg, archive, plan, button),
 			() => void this.showDetail(pkg),
+			findings.length > 0,
 		);
 	}
 
@@ -646,7 +712,7 @@ export class MarketplaceModal extends Modal {
 	 * archive overwrites files the user may have edited, so the question is
 	 * about the write plan, not only about active content.
 	 */
-	private confirmUpdate(pkg: Package, plan: PackagePlan, update: UpdatePlan, button: ButtonComponent) {
+	private confirmUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, button: ButtonComponent) {
 		const modified = update.writes.filter((write) => write.status === 'modified');
 		const count = (status: string) => update.writes.filter((write) => write.status === status).length;
 
@@ -666,23 +732,41 @@ export class MarketplaceModal extends Modal {
 			for (const write of modified) {
 				const row = list.createDiv({ cls: 'marketplace-finding marketplace-finding-warning' });
 				row.createDiv({ cls: 'marketplace-finding-label', text: 'Moved to trash, then replaced' });
-				row.createDiv({ cls: 'marketplace-finding-path', text: write.file.path });
+				row.createDiv({ cls: 'marketplace-finding-path', text: write.path });
 			}
 		}
 
-		renderFindings(this.bodyEl, plan.findings);
+		this.renderNewCapabilities(pkg);
+		renderManifest(this.bodyEl, describedBy(pkg), readContext(this.app));
 
 		renderConfirmRow(
 			this.bodyEl,
 			'Update',
-			() => void this.writeUpdate(pkg, update, button),
+			() => void this.writeUpdate(pkg, archive, update, button),
 			() => void this.showDetail(pkg),
 		);
 	}
 
-	private async writeUpdate(pkg: Package, update: UpdatePlan, button: ButtonComponent) {
+	/**
+	 * What this version asks for that the last one did not.
+	 *
+	 * A package can be harmless in version 1 and not in version 2. Showing the
+	 * whole manifest again says nothing about that — the reader already agreed
+	 * to it once. The difference is the only part that is new information.
+	 */
+	private renderNewCapabilities(pkg: Package) {
+		const accepted = this.plugin.settings.installs[pkg.id]?.capabilities ?? [];
+		const added = pkg.capabilities.filter((capability) => !accepted.includes(capability));
+		if (added.length === 0) return;
+
+		const row = this.bodyEl.createDiv({ cls: 'marketplace-finding marketplace-finding-danger' });
+		row.createDiv({ cls: 'marketplace-finding-label', text: 'This version asks for more than the one you installed' });
+		row.createDiv({ cls: 'marketplace-finding-path', text: added.join(', ') });
+	}
+
+	private async writeUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, button: ButtonComponent) {
 		try {
-			await applyUpdate(this.app, update);
+			await applyUpdate(this.app, archive, update);
 			this.rememberInstall(pkg, update.root);
 			await this.plugin.saveSettings();
 
@@ -696,14 +780,9 @@ export class MarketplaceModal extends Modal {
 	}
 
 	/** Writes to the vault — the only place files actually get created. */
-	private async write(pkg: Package, plan: PackagePlan, button: ButtonComponent) {
+	private async write(pkg: Package, archive: ArrayBuffer, plan: PackagePlan, button: ButtonComponent) {
 		try {
-			const folder = await installPlan(
-				this.app,
-				plan,
-				this.plugin.settings.downloadFolder,
-				pkg.title,
-			);
+			const folder = await installPlan(this.app, archive, pkg.title, this.plugin.settings.downloadFolder);
 
 			this.rememberInstall(pkg, folder);
 			// Saved BEFORE the redraw: showDetail() reads the record to pick
@@ -732,6 +811,8 @@ export class MarketplaceModal extends Modal {
 			// Cached so the Downloaded tab can draw this card without the network.
 			title: pkg.title,
 			author: pkg.author,
+			capabilities: pkg.capabilities,
+			authorId: pkg.authorId,
 		};
 	}
 
@@ -809,6 +890,11 @@ function recordAsPackage(id: string, record: InstallRecord): Package {
 		version: record.version,
 		updatedAt: '',
 		structure: [],
+		capabilities: record.capabilities ?? [],
+		manifest: null,
+		sha256: '',
+		policyVersion: 0,
+		revoked: false,
 	};
 }
 
@@ -883,4 +969,16 @@ function formatDate(iso: string): string {
 	if (!iso) return '';
 	const date = new Date(iso);
 	return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('en-US');
+}
+
+/**
+ * What the catalog says this package does.
+ *
+ * The server worked this out from the archive it received, and sha256 was
+ * checked against these exact bytes before anything was unpacked — so
+ * recomputing it here would run the same code over the same input for the same
+ * answer. That second copy cost 118 kB of JavaScript parser in the plugin.
+ */
+function describedBy(pkg: Package): Finding[] {
+	return pkg.manifest?.findings ?? [];
 }

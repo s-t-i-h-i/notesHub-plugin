@@ -4,10 +4,10 @@ import { collectFiles, findBrokenLinks, findNameProblems, type BrokenLink } from
 import { publishFolder } from './api/publishApi';
 import { fetchPackages, type Package } from './api/packagesApi';
 import { UnauthorizedError } from './api/api';
-import { isScannable, scanContent, type Finding } from './scan';
-import { MAX_PUBLISH_BYTES } from './constants';
+import { extensionOf, hasExif } from './verify';
+import type { Capability } from './policy/types';
 import { formatBytes } from './installs';
-import { renderFindings, renderConfirmRow } from './review';
+import { describeCapabilities, renderConfirmRow } from './review';
 
 type FieldKey = 'title' | 'description' | 'tags';
 
@@ -88,7 +88,7 @@ class PublishModal extends Modal {
 		const prefix = this.folder.isRoot() ? '' : this.folder.path + '/';
 		const nameProblems = findNameProblems(this.files, prefix);
 		const links = findBrokenLinks(this.app, this.files);
-		const findings = await this.scanFiles();
+		const withExif = await this.exifFiles();
 		const bytes = this.files.reduce((sum, file) => sum + file.stat.size, 0);
 		this.mine = await this.fetchOwnPackages();
 
@@ -96,15 +96,14 @@ class PublishModal extends Modal {
 
 		// File count and size up front: running "Publish" on the vault root
 		// would send everything, and without this the author wouldn't notice.
-		// The size is the uncompressed sum, so it can only hint at the limit —
-		// the real check runs on the finished archive in publishApi.
+		//
+		// No verdict on the limit here. This is the uncompressed sum against a
+		// compressed ceiling, and notes pack about ten to one, so it called a
+		// folder doomed that would have published comfortably. publishApi
+		// checks the finished archive a moment later and is simply right.
 		this.bodyEl.createDiv({
 			cls: 'marketplace-detail-desc',
-			text:
-				`To be sent: ${this.files.length} files, ${formatBytes(bytes)}.` +
-				(bytes > MAX_PUBLISH_BYTES
-					? ` That is already over the ${formatBytes(MAX_PUBLISH_BYTES)} limit before compression, so publishing will probably fail.`
-					: ''),
+			text: `To be sent: ${this.files.length} files, ${formatBytes(bytes)}.`,
 		});
 
 		// A hard block, not a warning: inspectArchive() rejects the whole
@@ -115,25 +114,20 @@ class PublishModal extends Modal {
 			return;
 		}
 
-		if (links.length === 0 && findings.length === 0) {
+		if (links.length === 0 && withExif.length === 0) {
 			this.renderForm();
 			return;
 		}
 
+		if (withExif.length > 0) this.renderExifWarning(withExif);
 		if (links.length > 0) this.renderLinks(links);
-		if (findings.length > 0) {
-			this.bodyEl.createDiv({
-				cls: 'marketplace-detail-desc',
-				text: 'This content will execute or connect to the network for anyone who downloads the package:',
-			});
-			renderFindings(this.bodyEl, findings);
-		}
 
-		// This is a warning, not a hard block — a package can be
-		// intentionally incomplete, and it's the author's call.
+		// Nothing here blocks publishing. Broken links are the author's call,
+		// and executable content is allowed on purpose — the catalog describes
+		// it rather than refusing it.
 		renderConfirmRow(
 			this.bodyEl,
-			'Publish anyway',
+			'Continue',
 			() => this.renderForm(),
 			() => this.close(),
 		);
@@ -159,17 +153,36 @@ class PublishModal extends Modal {
 		}
 	}
 
-	/** Reads the package's text files and scans them for active content. */
-	private async scanFiles(): Promise<Finding[]> {
-		const findings: Finding[] = [];
+	/**
+	 * Photos carrying EXIF, named.
+	 *
+	 * The only risk in this whole flow that runs the other way: it does not
+	 * endanger whoever downloads the package, it exposes the author. A photo
+	 * off a phone carries GPS coordinates and a camera serial, and publishing
+	 * puts both in a public catalog permanently.
+	 *
+	 * Named rather than stripped — removing metadata would change the author's
+	 * files without being asked.
+	 */
+	private async exifFiles(): Promise<string[]> {
+		const withExif: string[] = [];
 
 		for (const file of this.files) {
-			if (!isScannable(file.path)) continue;
-			// cachedRead, not read: this is just for scanning, not editing
-			findings.push(...scanContent(file.path, await this.app.vault.cachedRead(file)));
+			if (extensionOf(file.path) !== 'jpg' && extensionOf(file.path) !== 'jpeg') continue;
+			if (hasExif(new Uint8Array(await this.app.vault.readBinary(file)))) withExif.push(file.name);
 		}
 
-		return findings;
+		return withExif;
+	}
+
+	private renderExifWarning(withExif: string[]): void {
+		const row = this.bodyEl.createDiv({ cls: 'marketplace-finding marketplace-finding-warning' });
+		row.createDiv({ cls: 'marketplace-finding-label', text: 'These photos carry camera metadata' });
+		row.createDiv({ cls: 'marketplace-finding-path', text: withExif.slice(0, MAX_LISTED).join(', ') });
+		row.createDiv({
+			cls: 'marketplace-finding-path',
+			text: 'That can include the location the photo was taken and the camera serial number. Publishing makes it public.',
+		});
 	}
 
 	private renderNameProblems(problems: string[]) {
@@ -300,7 +313,7 @@ class PublishModal extends Modal {
 		button.setButtonText('Publishing...');
 
 		try {
-			await publishFolder(
+			const capabilities: Capability[] = await publishFolder(
 				this.app,
 				this.folder,
 				this.files,
@@ -316,7 +329,15 @@ class PublishModal extends Modal {
 				this.targetId || undefined,
 			);
 
-			new Notice(this.targetId ? 'Update published' : 'Published');
+			// What the catalog now says, in the server's own words. This used to
+			// be predicted here before uploading, which meant a second copy of
+			// the analyser in the plugin to produce the answer the response was
+			// about to carry anyway.
+			const done = this.targetId ? 'Update published' : 'Published';
+			new Notice(
+				capabilities.length === 0 ? `${done}. Listed as running no code.` : `${done}. Listed as: ${describeCapabilities(capabilities)}.`,
+				10_000,
+			);
 			this.close();
 		} catch (error) {
 			console.error(error);

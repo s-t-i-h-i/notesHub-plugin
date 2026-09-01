@@ -1,17 +1,19 @@
 import { App, normalizePath, TFile, TFolder } from 'obsidian';
-import JSZip from 'jszip';
 import { DEFAULT_SETTINGS } from './settings';
 import {
 	ALLOWED_EXTENSIONS,
 	MAX_ARCHIVE_BYTES,
 	MAX_ENTRIES,
+	MAX_ENTRY_BYTES,
 	MAX_ENTRY_DEPTH,
 	MAX_ENTRY_PATH,
 	MAX_FOLDER_NAME,
 	MAX_COMPRESSION_RATIO,
 	MAX_UNCOMPRESSED_BYTES,
 } from './constants';
-import { extensionOf, isScannable, scanContent, type Finding } from './scan';
+import { readTarGz, assertSafeEntryName, type TarEntry } from './tar';
+import { assertContentMatchesExtension, extensionOf } from './verify';
+import { disarm, arm } from './disarm';
 
 /**
  * Characters not allowed in a folder name.
@@ -53,58 +55,62 @@ const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 /** How many numbered suffixes to try on a taken name before giving up. */
 const MAX_NAME_ATTEMPTS = 100;
 
-/** An archive entry whose path has already passed validation. */
-interface PlannedFile {
-	/** Path relative to the package folder, e.g. "images/diagram.png". */
-	path: string;
-	entry: JSZip.JSZipObject;
-}
-
 /** A validated archive, ready to be written. */
 export interface PackagePlan {
-	files: PlannedFile[];
-	/** Active content found in the files — shown to the user BEFORE anything is written. */
-	findings: Finding[];
-	/** Unpacked size, as declared by the archive. */
+	/** Paths relative to the package folder, e.g. "images/diagram.png". */
+	paths: string[];
+	/** Unpacked size of the whole package. */
 	totalBytes: number;
 }
 
 /**
- * Validates an archive and builds the list of files to write.
+ * Validates an archive and works out what it holds. Writes nothing.
  *
- * Kept separate from writing on purpose: a downloaded package is someone
- * else's notes, so the user gets to see what's inside before anything lands
- * in their vault. This function itself writes nothing.
+ * No decompressed bytes are kept. A confirmation screen can sit open for as
+ * long as the reader likes, and pinning the unpacked package would hold up to
+ * MAX_UNCOMPRESSED_BYTES the whole time — so every later step re-reads the
+ * archive instead, which costs one gzip pass and no memory.
+ *
+ * What this does NOT do is describe the package again. The server already did
+ * that on these exact bytes — sha256 was checked before this was called — with
+ * the same code, so a second pass could only ever agree with itself.
+ *
+ * What stays is the path checking, and it stays for a different reason than
+ * distrust of the server: it is the last thing between an archive and
+ * vault.createBinary(). The cost is a scan over a string and the failure it
+ * prevents is writing outside the vault, so it is worth keeping whoever else
+ * has already looked.
  */
 export async function inspectArchive(archive: ArrayBuffer): Promise<PackagePlan> {
-	if (archive.byteLength === 0) {
-		throw new Error('The downloaded file is empty');
-	}
+	if (archive.byteLength === 0) throw new Error('The downloaded file is empty');
 	if (archive.byteLength > MAX_ARCHIVE_BYTES) {
 		throw new Error(
 			`The archive is ${formatBytes(archive.byteLength)}, the limit is ${formatBytes(MAX_ARCHIVE_BYTES)}`,
 		);
 	}
-	// Check the magic bytes before handing this to JSZip: the server is
-	// public, so its response is just bytes, and without this the user saw
-	// a raw JSZip error instead of a clear message.
-	if (!hasZipMagic(new Uint8Array(archive))) {
-		throw new Error('The downloaded file is not a ZIP archive');
-	}
 
-	const zip = await JSZip.loadAsync(archive);
+	const paths: string[] = [];
+	const seen = new Set<string>();
+	let totalBytes = 0;
 
-	// Validate the whole archive before writing a single byte. It's all
-	// string and metadata checks, and it guarantees "all or nothing".
-	const files = planFiles(zip);
-	if (files.length === 0) {
-		throw new Error('The archive contains no files');
-	}
+	await eachEntryAsync(archive, async (entry) => {
+		const path = safeRelativePath(entry.name);
 
-	const totalBytes = assertUnpackedSize(files, archive.byteLength);
-	const findings = await scanFiles(files);
+		// macOS and Windows are case-insensitive, so "A.md" and "a.md" are the
+		// same file there — the second write would fail mid-install.
+		const key = path.toLowerCase();
+		if (seen.has(key)) throw new Error(`Duplicate path in archive: ${entry.name}`);
+		seen.add(key);
 
-	return { files, findings, totalBytes };
+		assertContentMatchesExtension(path, entry.data);
+
+		paths.push(path);
+		totalBytes += entry.data.length;
+	});
+
+	if (paths.length === 0) throw new Error('The archive contains no files');
+
+	return { paths, totalBytes };
 }
 
 /**
@@ -113,14 +119,19 @@ export async function inspectArchive(archive: ArrayBuffer): Promise<PackagePlan>
  */
 export async function installPlan(
 	app: App,
-	plan: PackagePlan,
-	baseFolder: string,
+	archive: ArrayBuffer,
 	packageTitle: string,
+	baseFolder: string,
 ): Promise<string> {
 	const root = await createPackageFolder(app, baseFolder, packageTitle);
 
 	try {
-		await writeFiles(app, root, plan.files);
+		const folders = new Set<string>([root]);
+		await eachEntryAsync(archive, async (entry) => {
+			const path = `${root}/${safeRelativePath(entry.name)}`;
+			await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
+			await app.vault.createBinary(path, toWrite(entry).buffer as ArrayBuffer);
+		});
 	} catch (error) {
 		// A half-written package is worse than no package.
 		await rollback(app, root);
@@ -141,7 +152,7 @@ export async function installPlan(
 type FileStatus = 'new' | 'identical' | 'changed' | 'modified';
 
 interface PlannedWrite {
-	file: PlannedFile;
+	path: string;
 	status: FileStatus;
 	existing: TFile | null;
 }
@@ -156,13 +167,7 @@ export interface UpdatePlan {
  * Works out what updating an installed package would change. Writes nothing.
  *
  * `installedAt` is the timestamp recorded after the last install, so a file
- * whose content differs AND whose mtime is newer was edited by the user.
- *
- * The decompressed bytes are deliberately NOT kept in the plan: the user can
- * leave the confirmation screen open indefinitely, and pinning them would
- * hold the whole unpacked package (up to MAX_UNCOMPRESSED_BYTES) until they
- * decide. applyUpdate() re-reads each entry as it writes it, the same way
- * writeFiles() does on the install path.
+ * whose content differs AND whose mtime is newer was edited by the reader.
  *
  * ponytail: mtime is a heuristic, exact only to the filesystem's timestamp
  * resolution — an edit made in the same tick as the install reads as
@@ -171,7 +176,7 @@ export interface UpdatePlan {
  */
 export async function planUpdate(
 	app: App,
-	plan: PackagePlan,
+	archive: ArrayBuffer,
 	root: string,
 	installedAt: number,
 ): Promise<UpdatePlan> {
@@ -184,26 +189,20 @@ export async function planUpdate(
 	const existingFiles = indexFolder(app, root);
 	const writes: PlannedWrite[] = [];
 
-	for (const file of plan.files) {
-		const existing = existingFiles.get(file.path.toLowerCase()) ?? null;
+	await eachEntryAsync(archive, async (entry) => {
+		const path = safeRelativePath(entry.name);
+		const existing = existingFiles.get(path.toLowerCase()) ?? null;
 
 		if (existing === null) {
-			writes.push({ file, status: 'new', existing });
-			continue;
+			writes.push({ path, status: 'new', existing });
+			return;
 		}
 
-		// Both buffers fall out of scope at the end of the iteration, so the
+		// Both buffers fall out of scope at the end of the call, so the
 		// comparison costs two files' worth of memory, not the whole package.
-		const data = await file.entry.async('arraybuffer');
 		const current = await app.vault.readBinary(existing);
-		if (sameBytes(current, data)) {
-			writes.push({ file, status: 'identical', existing });
-			continue;
-		}
-
-		const status = existing.stat.mtime > installedAt ? 'modified' : 'changed';
-		writes.push({ file, status, existing });
-	}
+		writes.push({ path, status: compare(path, current, entry, existing.stat.mtime > installedAt), existing });
+	});
 
 	return { root, writes };
 }
@@ -212,42 +211,82 @@ export async function planUpdate(
  * Writes an update over an installed package.
  *
  * Deliberately no rollback(): that trashes the whole root folder, which here
- * would take the user's own notes with it. A half-applied update is instead
+ * would take the reader's own notes with it. A half-applied update is instead
  * made safe by being repeatable — the caller must not advance the install
  * record unless this resolves, so pressing Update again replays the same
  * plan, skips everything already written, and finishes the rest.
  */
-export async function applyUpdate(app: App, update: UpdatePlan): Promise<void> {
+export async function applyUpdate(app: App, archive: ArrayBuffer, update: UpdatePlan): Promise<void> {
 	const folders = new Set<string>([update.root]);
+	const planned = new Map(update.writes.map((write) => [write.path, write]));
 
-	for (const write of update.writes) {
-		// Already byte-identical — writing it would only churn mtime and make
-		// the next update think the user had touched it.
-		if (write.status === 'identical') continue;
+	await eachEntryAsync(archive, async (entry) => {
+		const write = planned.get(safeRelativePath(entry.name));
+		// Already byte-identical, or switched on by the reader — writing it
+		// would only churn mtime and undo their choice.
+		if (write === undefined || write.status === 'identical') return;
 
-		const path = `${update.root}/${write.file.path}`;
+		const path = `${update.root}/${write.path}`;
 		await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
 
-		// Unpacked here rather than in the plan, one file at a time — see
-		// planUpdate(). Identical entries are skipped above, so they are
-		// never decompressed twice.
-		const data = await write.file.entry.async('arraybuffer');
+		const data = toWrite(entry).buffer as ArrayBuffer;
 
 		if (write.existing === null) {
 			await app.vault.createBinary(path, data);
-			continue;
+			return;
 		}
 
-		// The user's version goes to the trash rather than under the new
+		// The reader's version goes to the trash rather than under the new
 		// bytes: an update is not allowed to destroy an edit outright.
 		if (write.status === 'modified') {
 			await app.fileManager.trashFile(write.existing);
 			await app.vault.createBinary(path, data);
-			continue;
+			return;
 		}
 
 		await app.vault.modifyBinary(write.existing, data);
+	});
+}
+
+/**
+ * What a file becomes on disk.
+ *
+ * Notes are written switched off: anything that would run the moment the note
+ * is opened is suffixed so no interpreter matches it. The code stays in the
+ * file, visible and unchanged, and the reader switches it on when they choose.
+ */
+function toWrite(entry: TarEntry): Uint8Array {
+	if (extensionOf(entry.name) !== 'md') return entry.data;
+
+	const text = new TextDecoder().decode(entry.data);
+	const off = disarm(text);
+
+	return off === text ? entry.data : new TextEncoder().encode(off);
+}
+
+/**
+ * How an installed file compares to the archive.
+ *
+ * For notes the comparison is made with everything switched back on, so a
+ * block the reader chose to enable does not read as an accidental edit — which
+ * would otherwise send their file to the trash on the next update.
+ */
+function compare(path: string, current: ArrayBuffer, entry: TarEntry, touched: boolean): FileStatus {
+	const wanted = toWrite(entry);
+	if (sameBytes(current, wanted)) return 'identical';
+
+	if (extensionOf(path) === 'md') {
+		const decoder = new TextDecoder();
+		try {
+			if (arm(decoder.decode(current)) === arm(decoder.decode(wanted))) return 'identical';
+		} catch {
+			/* not decodable as text — fall through to the byte answer */
+		}
 	}
+
+	// Different content AND touched since the install: the reader wrote this,
+	// so it goes to the trash rather than under the new bytes.
+	return touched ? 'modified' : 'changed';
 }
 
 /** Maps every file under `root` by its lowercased path relative to root. */
@@ -268,175 +307,84 @@ function indexFolder(app: App, root: string): Map<string, TFile> {
 	return files;
 }
 
-function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
+function sameBytes(a: ArrayBuffer, b: Uint8Array): boolean {
 	if (a.byteLength !== b.byteLength) return false;
 
-	const right = new Uint8Array(b);
-	return new Uint8Array(a).every((byte, index) => byte === right[index]);
+	const left = new Uint8Array(a);
+	return left.every((byte, index) => byte === b[index]);
 }
 
-/** PK\x03\x04 for a normal archive, PK\x05\x06 for an empty one. */
-function hasZipMagic(bytes: Uint8Array): boolean {
-	if (bytes.length < 4) return false;
-	return (
-		bytes[0] === 0x50 &&
-		bytes[1] === 0x4b &&
-		((bytes[2] === 0x03 && bytes[3] === 0x04) || (bytes[2] === 0x05 && bytes[3] === 0x06))
-	);
-}
+/** One pass over the archive, entry by entry, keeping nothing. */
+async function eachEntryAsync(archive: ArrayBuffer, visit: (entry: TarEntry) => Promise<void>): Promise<void> {
+	const source = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(new Uint8Array(archive));
+			controller.close();
+		},
+	});
 
-/**
- * Turns archive entries into a list of files to write.
- *
- * Throws on the first suspicious path — the whole archive is rejected
- * rather than silently skipping one entry. A path that escapes the target
- * folder is an attack, not a typo.
- */
-function planFiles(zip: JSZip): PlannedFile[] {
-	const files: PlannedFile[] = [];
-	const seen = new Set<string>();
-
-	for (const entry of Object.values(zip.files)) {
-		// Folders are rebuilt from file paths — a ZIP isn't required to have
-		// directory entries, so we can't rely on them anyway.
-		if (entry.dir) continue;
-
-		if (files.length >= MAX_ENTRIES) {
-			throw new Error(`The archive contains more than ${MAX_ENTRIES} files`);
-		}
-
-		const path = safeRelativePath(entry.name);
-
-		// macOS and Windows are case-insensitive, so "A.md" and "a.md" are
-		// the same file there — the second write would fail mid-install.
-		const key = path.toLowerCase();
-		if (seen.has(key)) {
-			throw new Error(`Duplicate path in archive: ${entry.name}`);
-		}
-		seen.add(key);
-
-		files.push({ path, entry });
+	for await (const entry of readTarGz(source, {
+		maxEntries: MAX_ENTRIES,
+		maxTotalBytes: MAX_UNCOMPRESSED_BYTES,
+		maxEntryBytes: MAX_ENTRY_BYTES,
+		maxRatio: MAX_COMPRESSION_RATIO,
+		maxPathLength: MAX_ENTRY_PATH,
+		maxDepth: MAX_ENTRY_DEPTH,
+		archiveBytes: archive.byteLength,
+	})) {
+		await visit(entry);
 	}
-
-	return files;
 }
 
 /**
- * Checks whether an archive path is safe and worth keeping.
+ * Checks whether an archive path is safe to write into a vault.
  *
- * One pass over the segments catches every kind of path escape: ".." goes
- * up a level, an empty segment means a leading slash (absolute path) or a
- * doubled "//", and "." is just clutter.
+ * Every name rule lives in tar.ts, because the worker has to enforce exactly
+ * the same ones — a package it accepts and this refuses is a catalog entry
+ * nobody can install. What stays here is the extension list, and it stays
+ * because this is the last thing before vault.createBinary().
  */
 export function safeRelativePath(name: string): string {
-	// Some zip tools write the Windows separator; we won't guess whether
-	// "a\b.md" is one filename or two path segments.
-	if (name.includes('\\')) {
-		throw new Error(`Disallowed path in archive: ${name}`);
-	}
-	if (name.length > MAX_ENTRY_PATH) {
-		throw new Error(`Path too long in archive: ${name.slice(0, 60)}...`);
-	}
-	if (CONTROL_CHARS.test(name)) {
-		throw new Error('Control characters in archive path');
-	}
-	if (BIDI_CHARS.test(name)) {
-		// Not cosmetic: a file like this shows a different extension in the
-		// file explorer than it actually has.
-		throw new Error('Text-direction control characters in archive path');
-	}
+	assertSafeEntryName(name, MAX_ENTRY_PATH, MAX_ENTRY_DEPTH);
 
-	const segments = name.split('/');
-	if (segments.length > MAX_ENTRY_DEPTH) {
-		throw new Error(`Nesting too deep in archive (${segments.length} levels)`);
-	}
-
-	for (const segment of segments) {
-		if (segment === '' || segment === '.' || segment === '..') {
-			throw new Error(`Disallowed path in archive: ${name}`);
-		}
-		// A leading dot hides the file from Obsidian's file explorer — a
-		// package has no reason to smuggle in invisible content.
-		if (segment.startsWith('.')) {
-			throw new Error(`Hidden file or folder in archive: ${name}`);
-		}
-		// Windows silently strips a trailing dot or space, so "note .md" and
-		// "note.md" become the same file — a collision waiting to happen
-		// mid-write.
-		if (/[. ]$/.test(segment)) {
-			throw new Error(`Name ending in a dot or space: ${name}`);
-		}
-		if (WINDOWS_RESERVED.test(segment)) {
-			throw new Error(`Reserved system name in archive: ${segment}`);
-		}
-	}
-
-	// Same extension list used when publishing. Without this, installing a
-	// package could write .js, .exe, or extensionless files to the vault,
-	// even though only notes and images could ever be packed.
 	const extension = extensionOf(name);
 	if (!ALLOWED_EXTENSIONS.includes(extension)) {
 		throw new Error(
-			`Disallowed file type in archive: ${name}` +
-				(extension ? ` (.${extension})` : ' (no extension)'),
+			`Disallowed file type in archive: ${name}` + (extension ? ` (.${extension})` : ' (no extension)'),
 		);
 	}
 
-	return segments.join('/');
+	return name;
 }
 
 /**
- * Checks the unpacked size using the sizes declared in the archive.
+ * Package notes whose name is already taken elsewhere in the vault.
  *
- * This is the only point where a zip bomb can still be stopped — after
- * calling `async()` the data is already in memory. A 204 KB archive can
- * declare 200 MB of content.
+ * Obsidian resolves [[Note]] by name across the whole vault, so a package
+ * shipping "Home.md" can quietly capture links in the reader's own private
+ * notes and put someone else's content where they expected theirs.
  *
- * `_data` is a JSZip internal field, read defensively: if a future JSZip
- * version renames it, the file-count limit still catches abuse.
+ * The server cannot see this — it does not know the reader's vault — which
+ * makes it the one check that has to live here. A warning, not a block: an
+ * overlapping name is usually a coincidence.
  */
-function assertUnpackedSize(files: PlannedFile[], archiveBytes: number): number {
-	let total = 0;
+export function findShadowedNotes(app: App, paths: string[]): string[] {
+	const existing = new Set(app.vault.getMarkdownFiles().map((file) => file.basename.toLowerCase()));
 
-	for (const file of files) {
-		const data = (file.entry as unknown as { _data?: { uncompressedSize?: number } })._data;
-		total += typeof data?.uncompressedSize === 'number' ? data.uncompressedSize : 0;
-	}
-
-	if (total > MAX_UNCOMPRESSED_BYTES) {
-		throw new Error(
-			`Unpacked, the package would take up ${formatBytes(total)}, the limit is ${formatBytes(MAX_UNCOMPRESSED_BYTES)}`,
-		);
-	}
-
-	// The size cap alone isn't enough — a tiny archive just under it is still a bomb.
-	if (total > MAX_COMPRESSION_RATIO * archiveBytes) {
-		throw new Error(
-			`Suspicious compression ratio: a ${formatBytes(archiveBytes)} archive unpacks to ${formatBytes(total)}`,
-		);
-	}
-
-	return total;
+	return paths
+		.filter((path) => extensionOf(path) === 'md')
+		.map(basenameOf)
+		.filter((name) => existing.has(name.toLowerCase()));
 }
 
-/** Reads text files from the archive and scans them for active content. */
-async function scanFiles(files: PlannedFile[]): Promise<Finding[]> {
-	const findings: Finding[] = [];
+function basenameOf(path: string): string {
+	const name = path.slice(path.lastIndexOf('/') + 1);
 
-	for (const file of files) {
-		if (!isScannable(file.path)) continue;
-		findings.push(...scanContent(file.path, await file.entry.async('string')));
-	}
-
-	return findings;
+	return name.slice(0, name.lastIndexOf('.'));
 }
 
 /** Creates an empty folder for the package and returns its path. */
-async function createPackageFolder(
-	app: App,
-	baseFolder: string,
-	packageTitle: string,
-): Promise<string> {
+async function createPackageFolder(app: App, baseFolder: string, packageTitle: string): Promise<string> {
 	// An empty setting shouldn't mean "dump the package into the vault root".
 	const base = normalizePath(baseFolder.trim() || DEFAULT_SETTINGS.downloadFolder);
 	assertInsideVault(base);
@@ -490,22 +438,6 @@ function assertInsideVault(path: string): void {
 	}
 }
 
-/** Writes the planned files, creating any missing subfolders along the way. */
-async function writeFiles(app: App, root: string, files: PlannedFile[]): Promise<void> {
-	// Track folders already created: createFolder() throws if the folder
-	// exists, and every other file in the same subfolder would hit this again.
-	const folders = new Set<string>([root]);
-
-	for (const file of files) {
-		const path = `${root}/${file.path}`;
-		await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
-
-		// createBinary() writes raw bytes, so it handles .md and images
-		// alike — one code path instead of branching on extension.
-		await app.vault.createBinary(path, await file.entry.async('arraybuffer'));
-	}
-}
-
 /** Creates a folder along with any missing parent folders, root-down. */
 async function ensureFolder(app: App, path: string, folders: Set<string>): Promise<void> {
 	let current = '';
@@ -526,7 +458,7 @@ async function ensureFolder(app: App, path: string, folders: Set<string>): Promi
  * Cleans up after a failed install.
  *
  * The folder goes to the trash, not permanent deletion — if validation ever
- * false-positives, the user can still get their files back.
+ * false-positives, the reader can still get their files back.
  */
 async function rollback(app: App, root: string): Promise<void> {
 	const folder = app.vault.getAbstractFileByPath(root);

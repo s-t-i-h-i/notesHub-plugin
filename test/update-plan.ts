@@ -7,9 +7,9 @@
  * into a "local edit" and trashes the whole package, while an mtime check
  * that stops working overwrites real edits with no trace.
  */
-import JSZip from 'jszip';
 import { TFile, TFolder } from 'obsidian';
 import { inspectArchive, planUpdate, applyUpdate } from '../src/installs';
+import { writeTarGz } from '../src/tar';
 
 let failures = 0;
 function check(label: string, cond: boolean, extra = '') {
@@ -89,13 +89,15 @@ class FakeVault {
 
 async function run() {
 	// The archive the server would hand us.
-	const zip = new JSZip();
-	zip.file('Same.md', 'unchanged text');
-	zip.file('Old.md', 'v2 text');
-	zip.file('Edited.md', 'v2 text');
-	zip.file('New.md', 'brand new');
-	zip.file('Note.md', 'v2 text');
-	const archive = await zip.generateAsync({ type: 'arraybuffer' });
+	const archive = (
+		await writeTarGz([
+			{ name: 'Same.md', data: encoder.encode('unchanged text') },
+			{ name: 'Old.md', data: encoder.encode('v2 text') },
+			{ name: 'Edited.md', data: encoder.encode('v2 text') },
+			{ name: 'New.md', data: encoder.encode('brand new') },
+			{ name: 'Note.md', data: encoder.encode('v2 text') },
+		])
+	).buffer as ArrayBuffer;
 
 	const vault = new FakeVault(ROOT);
 	// Identical content but a fresh mtime — exactly what Obsidian Sync,
@@ -121,10 +123,10 @@ async function run() {
 		},
 	};
 
-	const plan = await inspectArchive(archive);
-	const update = await planUpdate(app, plan, ROOT, INSTALLED_AT);
+	await inspectArchive(archive);
+	const update = await planUpdate(app, archive, ROOT, INSTALLED_AT);
 
-	const status = (path: string) => update.writes.find((write) => write.file.path === path)?.status;
+	const status = (path: string) => update.writes.find((write) => write.path === path)?.status;
 
 	console.log('\n--- classification ---');
 	check('identical content is never a local edit, whatever the mtime says', status('Same.md') === 'identical', `-> ${status('Same.md')}`);
@@ -133,7 +135,7 @@ async function run() {
 	check('absent from the folder -> new', status('New.md') === 'new', `-> ${status('New.md')}`);
 	check('case-insensitive match finds the existing file', status('Note.md') === 'changed', `-> ${status('Note.md')}`);
 
-	await applyUpdate(app, update);
+	await applyUpdate(app, archive, update);
 
 	console.log('\n--- writes ---');
 	console.log('  log:', JSON.stringify(vault.log));
@@ -150,9 +152,9 @@ async function run() {
 	console.log('\n--- repeat is a no-op ---');
 	// A failed update must be safe to retry, and that only holds if a second
 	// run over an already-updated folder writes nothing at all.
-	const second = await planUpdate(app, plan, ROOT, Date.now());
+	const second = await planUpdate(app, archive, ROOT, Date.now());
 	vault.log.length = 0;
-	await applyUpdate(app, second);
+	await applyUpdate(app, archive, second);
 	check('re-running the same update writes nothing', vault.log.length === 0, `-> ${JSON.stringify(vault.log)}`);
 }
 
