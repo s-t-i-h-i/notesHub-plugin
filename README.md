@@ -4,88 +4,103 @@ Publish a folder from your vault as a package — notes, a guide, a template col
 
 ## Why
 
-Notes Hub is meant to be the first public, community-built collection of notes for Obsidian. If you spent time organizing a course, structuring your notes, or building an useful guide — that work might save someone else a lot of time too. Notes Hub is a place to share it. It removes the friction of sharing and downloading interlinked notes between Obsidian vaults.
+Notes Hub is a community-built collection of notes for Obsidian. If you spent time organizing a course, structuring your notes, or building a useful guide — that work might save someone else a lot of time too. Notes Hub is a place to share it. It removes the friction of sharing and downloading interlinked notes between Obsidian vaults.
 
 **The platform is free to use.**
 
 ## Features
 
-- **Publish a folder as a package.** Right-click any folder and select *Publish* to package it and upload it.
-- **Update packages.** Downloaded packages can be updated in place without losing your local notes. Authors can publish updates to their existing packages.
-- **Broken link detection.** Before publishing, the plugin checks for links pointing outside the selected folder or to notes that don't exist, so you don't accidentally ship broken references.
-- **Content review before download.** Downloaded packages are scanned for active content (embedded scripts, dataviewjs blocks, Templater syntax, and similar) and flagged before installation. You decide whether to proceed.
-- **Vault isolation.** Downloaded packages are extracted into their own folder. They don't spill tags, queries, or files into the rest of your vault.
-- **No email, no password.** Sign in with GitHub — only required if you want to publish your content.
-- **Browse and search.** A built-in modal lists available packages with title, author, description, and tags. downloading does not require registration!
+- **Publish a folder as a package.** Right-click any folder and select **Publish** to package and upload it.
+- **Update packages cleanly.** Authors can publish new versions of existing packages. Downloaded packages can be updated in place while preserving untouched files and safely moving modified files to trash.
+- **Pre-publish checks.** Checks for broken links, unresolved targets, and camera EXIF metadata (GPS/serial numbers in JPGs) before uploading.
+- **Safe block execution (Disarmed by default).** Executable scripts (such as `dataviewjs`, Templater, and other dynamic blocks) arrive safely disabled so foreign code never runs without your consent. Inspect the code in reading view and enable it with one click.
+- **Vault isolation & conflict detection.** Downloaded packages are extracted into their own folder. The plugin warns you before install if note names overlap with existing notes in your vault.
+- **Browse, filter, and manage.** Modal with **Browse**, **My packages**, and **Downloaded** (offline) tabs, tag filtering, sorting, and folder structure previews.
+- **No email, no password.** Sign in with GitHub — only required if you want to publish packages. Downloading and browsing require no account.
 
 ## Installation
 
 Notes Hub is not yet in the Obsidian Community Plugins directory. Until it is, install manually:
 
-1. Download the latest release (`main.js`, `manifest.json`, `styles.css`) from the [Releases page](#).
+1. Download the latest release (`main.js`, `manifest.json`, `styles.css`) from the Releases page.
 2. Create a folder named `notes-hub` inside `<your-vault>/.obsidian/plugins/`.
 3. Copy the three files into that folder.
-4. Reload Obsidian and enable **Notes Hub** in *Settings → Community plugins*.
+4. Reload Obsidian and enable **Notes Hub** in **Settings → Community plugins**.
 
 Alternatively, install through [BRAT](https://github.com/TfTHacker/obsidian42-brat) by pointing it at this repository.
 
 ## Getting started
 
-### Sign in
+### Sign in (for publishing)
 
-Open *Settings → Notes Hub* and select **Connect GitHub**. This opens your browser to sign in with GitHub, then shows a personal access token to paste back into the settings tab. It's stored locally in your vault — if you ever lose it, just sign in with GitHub again for a new one.
+1. Open **Settings → Notes Hub**.
+2. Under **Account for publishing notes**, click **Connect GitHub** to authenticate in your browser.
+3. Copy the generated token (`omp_...`), paste it into the token field, and click **Log in**.
 
 ### Publish a package
 
-1. Right-click a folder in the file explorer.
-2. Select **Publish**.
-3. Fill in a title, description, and tags.
-4. Review any warnings about broken links or active content.
-5. Confirm. The folder is uploaded!
+1. Right-click any folder in the file explorer and select **Publish**.
+2. Review the pre-publish screen (file count, size, and warnings for broken links or photo EXIF metadata).
+3. Fill in the **Title**, **Description**, and **Tags** (comma-separated).
+4. Click **Publish**.
 
-Only Markdown files, canvases, and images inside the folder are included. Hidden folders and unsupported file types are skipped automatically.
+Only Markdown files, canvases, and supported images inside the folder are included. Hidden folders and unsupported file types are skipped automatically.
 
-### Download a package
+### Browse and download a package
 
-1. Run the **Open Notes Hub** command.
-2. Browse or search the list of published packages.
-3. Select one and click **Download**.
+1. Run the **Open marketplace** command from the command palette.
+2. Explore packages in **Browse**, filter by tag, or change sort order.
+3. Click any package card to view details, description, and the folder structure.
+4. Click **Download**, review the security manifest and shadowed note warnings, and click **Install**.
 
-The package is extracted into a new, isolated folder in your vault, named after the package. Your existing notes, tags, and settings are left untouched.
+The package is extracted into your configured download folder (defaults to `marketplace-downloads/<package-title>`).
+
+### Running executable blocks safely
+
+When a package contains executable code blocks (like `dataviewjs` or Templater):
+- Blocks are installed in a disabled (`-off`) state with the code clearly visible in reading view.
+- Click **Enable this block** on any panel after reviewing its code to activate it.
+- Use the commands **Enable all blocks in this note** or **Disable all blocks in this note** to toggle all blocks in the active file.
 
 ### Update a downloaded package
 
-1. Run the **Open Notes Hub** command.
-2. Packages with newer versions will display an **Update available** badge.
-3. Select one and click **Update (vX → vY)**.
-4. Review the changes (new, replaced, or unchanged files). If you modified any package files locally, they will be moved to the trash before being replaced.
+1. Open the marketplace (**Open marketplace** command) and go to **Browse** or the **Downloaded** tab.
+2. Packages with newer versions display an **Update available** badge.
+3. Open the package and click **Update (vX → vY)**.
+4. Review the write plan (new, replaced, unchanged files, or your own local edits moved to trash) and any newly requested capabilities.
 5. Click **Update** to confirm.
 
 ### Update a published package
 
-1. Right-click a folder in the file explorer and select **Publish**.
-2. From the **Publish as** dropdown, select the package you want to update (it will pre-fill the form with its current title, description, and tags).
-3. Review warnings and click **Publish update**. The package keeps its ID and its version is bumped.
+1. Right-click the folder in the file explorer and select **Publish**.
+2. In the **Publish as** dropdown, select your existing package.
+3. Review warnings, update details if desired, and click **Publish update**.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `Open marketplace` | Open the Notes Hub marketplace to browse, download, and manage packages. |
+| `Enable all blocks in this note` | Turn on all disarmed executable blocks in the current note. |
+| `Disable all blocks in this note` | Turn off all executable blocks in the current note for safe review. |
 
 ## Settings
 
 | Setting | Description |
 |---|---|
-| Username | Your public author name, shown on published packages. |
-| Token | Your personal access token, issued when you sign in with GitHub. Can be revoked from the same tab. |
-| Download folder | Where downloaded packages are placed in your vault. |
+| **Download folder** | Folder in your vault where downloaded packages are placed (default: `marketplace-downloads`). |
+| **Sign in / Account** | Connect with GitHub and paste your token to publish packages. Displays current username and active device count. |
+| **Log out** | Signs out of the plugin on the current device only. |
+| **Revoke device (Advanced)** | Revokes this device's token on the server if leaked. |
+| **Close account (Advanced)** | Permanently deletes your account, devices, and all published packages. |
 
 ## Security and privacy
 
-- Packages are scanned server-side before publishing. File extensions outside a fixed whitelist (Markdown, canvas, common image formats) are rejected on upload and on install, in both directions.
-- Path traversal and archive-based attacks (oversized or maliciously compressed ZIPs) are rejected before any file is written to disk.
-- The active-content scan on install is a heuristic warning, not a guarantee — always review what you're installing, especially from authors you don't recognize.
-- The plugin sends your title, description, tags, and the packaged files to the Notes Hub API when you publish. It does not read or transmit anything outside the folder you explicitly select.
-- No email address is required or collected. Deleting your account removes your token and all packages you've published.
-
-## Known limitations
-
-- This is an MVP early release. More features and improvements are on the way.
+- **Safe execution by default:** Dynamic scripts and blocks arrive disarmed so untrusted code never executes automatically on install.
+- **Server and client validation:** Files outside allowed extensions (Markdown, Canvas, common images) and malformed archive paths are rejected on both upload and download.
+- **Privacy protection:** Pre-publish scan checks for camera EXIF metadata in JPG photos (GPS locations, camera serials) and broken vault links before publishing.
+- **Vault safety:** Overwriting files during updates backs up locally modified files to the trash. Note name collisions across the vault are flagged before installation.
+- **Zero tracking & minimal data:** No email or password stored. The plugin only transmits metadata and contents of folders you explicitly publish.
 
 ## Contributing
 

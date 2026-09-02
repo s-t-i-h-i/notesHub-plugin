@@ -1,6 +1,6 @@
 {
 	"name": "notes-hub",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Browse, download, and publish knowledge packages shared by the community.",
 	"main": "main.js",
 	"type": "module",
