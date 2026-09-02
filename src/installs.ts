@@ -13,7 +13,8 @@ import {
 } from './constants';
 import { readTarGz, assertSafeEntryName, type TarEntry } from './tar';
 import { assertContentMatchesExtension, extensionOf } from './verify';
-import { disarm, arm } from './disarm';
+import { arm, armCanvas, disarm, disarmCanvas } from './disarm';
+import type { Capability, Finding } from './policy/types';
 
 /**
  * Characters not allowed in a folder name.
@@ -55,12 +56,32 @@ const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 /** How many numbered suffixes to try on a taken name before giving up. */
 const MAX_NAME_ATTEMPTS = 100;
 
+/**
+ * Capabilities toWrite() is supposed to neutralise.
+ *
+ * Everything else the manifest reports on a 'render' trigger — a remote image,
+ * a DQL query — is deliberately left running, so counting those would turn the
+ * check below into noise nobody reads.
+ */
+const DISARMED_CAPABILITIES: Capability[] = ['js', 'remote-embed'];
+
 /** A validated archive, ready to be written. */
 export interface PackagePlan {
 	/** Paths relative to the package folder, e.g. "images/diagram.png". */
 	paths: string[];
 	/** Unpacked size of the whole package. */
 	totalBytes: number;
+	/**
+	 * Files the server says start on their own that we did NOT switch off.
+	 *
+	 * The install screen used to state flatly that anything self-starting is
+	 * installed switched off. Nothing checked whether that was true for the
+	 * package in hand, so a construct disarm() did not know about — a canvas, a
+	 * fence language it skipped — shipped live under a reassuring sentence. The
+	 * manifest is an independent witness here: it is computed by the server from
+	 * the same bytes, by code that is not the code being checked.
+	 */
+	stillArmed: string[];
 }
 
 /**
@@ -81,7 +102,7 @@ export interface PackagePlan {
  * prevents is writing outside the vault, so it is worth keeping whoever else
  * has already looked.
  */
-export async function inspectArchive(archive: ArrayBuffer): Promise<PackagePlan> {
+export async function inspectArchive(archive: ArrayBuffer, findings: Finding[] = []): Promise<PackagePlan> {
 	if (archive.byteLength === 0) throw new Error('The downloaded file is empty');
 	if (archive.byteLength > MAX_ARCHIVE_BYTES) {
 		throw new Error(
@@ -91,6 +112,12 @@ export async function inspectArchive(archive: ArrayBuffer): Promise<PackagePlan>
 
 	const paths: string[] = [];
 	const seen = new Set<string>();
+	const stillArmed: string[] = [];
+	const selfStarting = new Set(
+		findings
+			.filter((found) => found.trigger === 'render' && found.capabilities.some((c) => DISARMED_CAPABILITIES.includes(c)))
+			.map((found) => found.path),
+	);
 	let totalBytes = 0;
 
 	await eachEntryAsync(archive, async (entry) => {
@@ -104,13 +131,17 @@ export async function inspectArchive(archive: ArrayBuffer): Promise<PackagePlan>
 
 		assertContentMatchesExtension(path, entry.data);
 
+		// toWrite() hands back the very same array when it changed nothing, so
+		// identity is the answer to "did we switch anything off in this file".
+		if (selfStarting.has(entry.name) && toWrite(entry) === entry.data) stillArmed.push(path);
+
 		paths.push(path);
 		totalBytes += entry.data.length;
 	});
 
 	if (paths.length === 0) throw new Error('The archive contains no files');
 
-	return { paths, totalBytes };
+	return { paths, totalBytes, stillArmed };
 }
 
 /**
@@ -256,10 +287,13 @@ export async function applyUpdate(app: App, archive: ArrayBuffer, update: Update
  * file, visible and unchanged, and the reader switches it on when they choose.
  */
 function toWrite(entry: TarEntry): Uint8Array {
-	if (extensionOf(entry.name) !== 'md') return entry.data;
+	const extension = extensionOf(entry.name);
+	// A canvas renders its text nodes exactly like a note, so it needs the same
+	// treatment — through its own JSON, which plain disarm() cannot see into.
+	if (extension !== 'md' && extension !== 'canvas') return entry.data;
 
 	const text = new TextDecoder().decode(entry.data);
-	const off = disarm(text);
+	const off = extension === 'canvas' ? disarmCanvas(text) : disarm(text);
 
 	return off === text ? entry.data : new TextEncoder().encode(off);
 }
@@ -275,10 +309,12 @@ function compare(path: string, current: ArrayBuffer, entry: TarEntry, touched: b
 	const wanted = toWrite(entry);
 	if (sameBytes(current, wanted)) return 'identical';
 
-	if (extensionOf(path) === 'md') {
+	const extension = extensionOf(path);
+	if (extension === 'md' || extension === 'canvas') {
 		const decoder = new TextDecoder();
 		try {
-			if (arm(decoder.decode(current)) === arm(decoder.decode(wanted))) return 'identical';
+			const armed = extension === 'canvas' ? canvasKey : arm;
+			if (armed(decoder.decode(current)) === armed(decoder.decode(wanted))) return 'identical';
 		} catch {
 			/* not decodable as text — fall through to the byte answer */
 		}
@@ -287,6 +323,21 @@ function compare(path: string, current: ArrayBuffer, entry: TarEntry, touched: b
 	// Different content AND touched since the install: the reader wrote this,
 	// so it goes to the trash rather than under the new bytes.
 	return touched ? 'modified' : 'changed';
+}
+
+/**
+ * A canvas reduced to what an edit would actually change.
+ *
+ * Switched back on, so a block the reader enabled is not read as an edit, and
+ * re-serialised, so Obsidian's own rewriting of the file's indentation is not
+ * either. Node positions still differ when the reader really moved something.
+ */
+function canvasKey(text: string): string {
+	try {
+		return JSON.stringify(JSON.parse(armCanvas(text)));
+	} catch {
+		return text;
+	}
 }
 
 /** Maps every file under `root` by its lowercased path relative to root. */

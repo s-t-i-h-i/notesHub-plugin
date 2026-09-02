@@ -9,6 +9,7 @@
  * The mechanism is deliberately just text:
  *
  *   ```dataviewjs   ->  ```dataviewjs-off
+ *   `$= code()`     ->  `off:$= code()`
  *   <iframe src=…>  ->  <iframe data-off-src=…>
  *
  * Dataview matches the language exactly, so `dataviewjs-off` runs nothing while
@@ -16,13 +17,24 @@
  * no record to keep in sync, and someone can undo it by hand in the editor if
  * this plugin is not around.
  *
- * Templater is NOT disarmed, on purpose. It runs when the reader invokes it,
- * not when a note is opened, and an install lands in the download folder rather
- * than a template folder. Disarming it would be friction with nothing behind it
- * — which is exactly what the old warning screen was.
+ * A plain Templater command is NOT disarmed, on purpose. It runs when the reader
+ * invokes it, not when a note is opened, and an install lands in the download
+ * folder rather than a template folder. Disarming it would be friction with
+ * nothing behind it — which is exactly what the old warning screen was.
+ *
+ * Its DYNAMIC form is another matter and is switched off:
+ *
+ *   <%+ code %>     ->  <%off:+ code %>
+ *
+ * Measured in Obsidian with Templater 2.25: a dynamic command is executed by a
+ * markdown post-processor when the note is opened, with no command from anyone.
+ * Parking the marker after "<%" stops the dynamic pattern from matching while
+ * leaving the fragment where Templater's ordinary command path can still find
+ * it — so this demotes it to the trigger every other Templater tag already has,
+ * rather than pretending to delete it.
  */
 
-import { lex, type Fence } from './policy/lex';
+import { INLINE_OFF, lex, type Fence } from './policy/lex';
 import { scanTags } from './policy/html';
 import { interpreterFor, selfStartingFences } from './policy/interpreters';
 
@@ -124,6 +136,38 @@ function collect(text: string, direction: 'disarm' | 'arm'): Edit[] {
 		if (span !== null) edits.push({ from: span.from, to: span.to, text: target });
 	}
 
+	// Dataview claims an inline span by prefix, so breaking the prefix is the
+	// same move as renaming a fence: nothing matches, every character stays on
+	// screen, and putting it back is the exact inverse.
+	for (const query of document.inline) {
+		if (direction === 'disarm') {
+			// A DQL query executes nothing — left alone for the same reason the
+			// ```dataview fence is.
+			if (query.kind !== 'js') continue;
+			edits.push({ from: query.prefixAt, to: query.prefixAt, text: INLINE_OFF });
+		} else {
+			if (query.kind !== 'off') continue;
+			edits.push({ from: query.prefixAt, to: query.prefixAt + INLINE_OFF.length, text: '' });
+		}
+	}
+
+	// Templater's dynamic command starts on its own, so it belongs here; the
+	// plain one still waits for the reader and is left as it is.
+	for (const fragment of document.templater) {
+		// Two past the '<' is directly after "<%", which is where the marker has
+		// to sit: Templater's pattern allows modifiers between "<%" and the '+',
+		// so anything later could be stepped over.
+		const at = fragment.offset + 2;
+
+		if (direction === 'disarm') {
+			if (!fragment.dynamic) continue;
+			edits.push({ from: at, to: at, text: INLINE_OFF });
+		} else {
+			if (!fragment.off) continue;
+			edits.push({ from: at, to: at + INLINE_OFF.length, text: '' });
+		}
+	}
+
 	// Remote sources in the prose. Fences are blanked out in `prose`, so an
 	// <iframe> written inside a code sample is left alone — it is being shown,
 	// not used.
@@ -209,6 +253,81 @@ function apply(text: string, edits: Edit[]): string {
 	}
 
 	return result;
+}
+
+/**
+ * Switches a canvas off, and back on.
+ *
+ * A canvas is JSON whose `text` nodes hold Markdown, and Obsidian renders them
+ * exactly like a note — so a ```dataviewjs block in one runs on opening the
+ * canvas. disarm() cannot see it from the outside: inside the JSON the fence is
+ * a string with escaped newlines, so the lexer finds no fence at all.
+ */
+export function disarmCanvas(text: string): string {
+	return mapCanvas(text, disarm);
+}
+
+export function armCanvas(text: string): string {
+	return mapCanvas(text, arm);
+}
+
+/**
+ * Switches on the one canvas block whose code is `source`.
+ *
+ * armBlock() finds its block by line, which a canvas cannot provide —
+ * getSectionInfo() answers null there because the Markdown lives inside JSON.
+ * The block's own code is the only handle the rendered panel has, so that is
+ * what identifies it; the first node holding it wins, and everything else in
+ * that node stays as it was.
+ */
+export function armCanvasBlock(text: string, source: string): string {
+	let armedOne = false;
+
+	return mapCanvas(text, (node) => {
+		if (armedOne) return node;
+
+		const at = node.indexOf(source);
+		if (at === -1) return node;
+
+		armedOne = true;
+		// The body starts one line below the fence that opens it.
+		return armBlock(node, lineOf(node, at) - 1);
+	});
+}
+
+/**
+ * Applies a text change to every canvas node that holds Markdown.
+ *
+ * Returns the input untouched when nothing changed, rather than re-serialising
+ * it: JSON.stringify would rewrite the author's formatting, and an update would
+ * then read every canvas in the package as edited by the reader.
+ */
+function mapCanvas(text: string, change: (node: string) => string): string {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		// The server refuses a canvas that is not JSON, so this is a local file
+		// someone hand-edited. Leaving it alone beats throwing mid-install.
+		return text;
+	}
+
+	const nodes = (parsed as { nodes?: unknown })?.nodes;
+	if (!Array.isArray(nodes)) return text;
+
+	let changed = false;
+	for (const node of nodes) {
+		const entry = node as { type?: unknown; text?: unknown };
+		if (entry?.type !== 'text' || typeof entry.text !== 'string') continue;
+
+		const next = change(entry.text);
+		if (next === entry.text) continue;
+
+		entry.text = next;
+		changed = true;
+	}
+
+	return changed ? JSON.stringify(parsed) : text;
 }
 
 function bodyOffset(text: string, fenceOffset: number): number {

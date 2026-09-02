@@ -1,5 +1,5 @@
 import { Notice, Plugin, TFile, type MarkdownPostProcessorContext } from 'obsidian';
-import { arm, armBlock, disarm, disarmedLanguages } from './disarm';
+import { arm, armBlock, armCanvasBlock, disarm, disarmedLanguages } from './disarm';
 
 /**
  * How a switched-off block looks and how the reader switches it on.
@@ -50,12 +50,29 @@ function renderDisarmed(plugin: Plugin, source: string, el: HTMLElement, ctx: Ma
 
 	const button = footer.createEl('button', { text: 'Enable this block' });
 	button.addEventListener('click', () => {
+		// Measured: a canvas renders its nodes with sourcePath = "", so the path
+		// resolves to nothing there. The open file IS the canvas, and matching
+		// the block by its own code means a wrong guess changes nothing rather
+		// than rewriting the wrong file.
+		const named = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
+		const file = named instanceof TFile ? named : plugin.app.workspace.getActiveFile();
+
+		if (!(file instanceof TFile)) {
+			new Notice('Could not find this block in the note.');
+			return;
+		}
+
+		// A canvas has no line map either — its Markdown lives inside JSON, so
+		// getSectionInfo() answers null and the code itself is the handle.
+		if (file.extension === 'canvas') {
+			void plugin.app.vault.process(file, (text) => armCanvasBlock(text, source));
+			return;
+		}
+
 		// getSectionInfo() is what maps this rendered element back to the
 		// lines it came from; without it there is nothing to rewrite.
 		const section = ctx.getSectionInfo(el);
-		const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
-
-		if (section === null || !(file instanceof TFile)) {
+		if (section === null) {
 			new Notice('Could not find this block in the note.');
 			return;
 		}

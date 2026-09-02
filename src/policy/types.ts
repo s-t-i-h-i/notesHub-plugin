@@ -80,7 +80,7 @@ export interface Manifest {
 }
 
 /** Bump on any change to what the analysis reports. */
-export const POLICY_VERSION = 1;
+export const POLICY_VERSION = 2;
 
 /** A short, single-line excerpt of the offending fragment. */
 export function excerpt(text: string, limit = 160): string {

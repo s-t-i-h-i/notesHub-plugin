@@ -2,6 +2,14 @@
 
 Publish a folder from your vault as a package — notes, a guide, a template collection — and download packages shared by others. No servers to run, no accounts on a third-party platform, just a folder and a click.
 
+
+> [!TIP] Early days
+> Notes Hub just launched, and it's still pretty empty — but your contributions will help it grow!
+>
+> Publish your notes and help build a community-driven hub of knowledge, together.
+
+
+
 ## Why
 
 Notes Hub is a community-built collection of notes for Obsidian. If you spent time organizing a course, structuring your notes, or building a useful guide — that work might save someone else a lot of time too. Notes Hub is a place to share it. It removes the friction of sharing and downloading interlinked notes between Obsidian vaults.

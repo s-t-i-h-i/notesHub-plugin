@@ -1,6 +1,6 @@
 {
 	"id": "communitynoteshub",
-	"name": "notes-hub",
+	"name": "Notes hub",
 	"version": "0.2.1",
 	"minAppVersion": "1.6.6",
 	"description": "Browse, download, and publish knowledge packages shared by the community.",

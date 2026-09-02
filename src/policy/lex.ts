@@ -10,6 +10,9 @@
  *                   that knows only backticks misses it entirely
  *   `dataviewjs`    inside a sentence is a word, and alarming on it teaches
  *                   people to click past the warning that mattered
+ *   `$= code()`     is NOT a word: Dataview runs an inline span whose text
+ *                   starts with its prefix, on render, exactly like a fenced
+ *                   ```dataviewjs block
  *
  * Everything that is not code is blanked out in place, keeping offsets, so the
  * HTML scanner and the link scanner see the document with its code removed and
@@ -27,11 +30,46 @@ export interface Fence {
 	offset: number;
 }
 
+/**
+ * A Dataview inline query — a code span the reader sees as `code` and Dataview
+ * executes.
+ *
+ * Measured in Obsidian 1.9 with Dataview 0.5: an inline span runs, a fenced
+ * block whose body starts with the same prefix does not, even with
+ * `inlineQueriesInCodeblocks` on. So this is about spans only.
+ */
+export interface InlineQuery {
+	/** 'js' evaluates JavaScript; 'dql' only queries the vault; 'off' is one disarm() switched off. */
+	kind: 'js' | 'dql' | 'off';
+	/** The query itself, prefix stripped. */
+	text: string;
+	line: number;
+	hidden: boolean;
+	/** Offset of the opening backtick run. */
+	offset: number;
+	/** Offset of the prefix itself — the one position disarm() breaks and arm() repairs. */
+	prefixAt: number;
+}
+
+/** One <% ... %>, wherever it sits in the file. */
 export interface Fragment {
 	text: string;
 	line: number;
 	hidden: boolean;
+	/** Offset of the '<'. The marker goes two past it, right after "<%". */
 	offset: number;
+	/**
+	 * A dynamic command, `<%+ ... %>`.
+	 *
+	 * Measured in Obsidian with Templater 2.25: Templater registers a markdown
+	 * post-processor for these and walks the rendered text nodes, so a dynamic
+	 * command runs the moment a note is opened — in prose, inside a code span
+	 * and inside a fenced block alike. Plain `<% %>` and `<%* %>` do not; they
+	 * still wait for the reader to invoke Templater.
+	 */
+	dynamic: boolean;
+	/** Already switched off by disarm(). */
+	off: boolean;
 }
 
 export interface LinkRef {
@@ -46,8 +84,10 @@ export interface Lexed {
 	/** YAML header, or '' when there is none. Some keys change the file's interpreter. */
 	frontmatter: string;
 	fences: Fence[];
-	/** Templater fragments: every <% ... %>, not only <%* ... %>. */
+	/** Templater fragments: every <% ... %>, wherever it sits — structure hides nothing from Templater. */
 	templater: Fragment[];
+	/** Dataview inline queries: every `$= ...` and `= ...` span. */
+	inline: InlineQuery[];
 	links: LinkRef[];
 	/** The document with code, frontmatter and templater blanked out, offsets intact. */
 	prose: string;
@@ -55,10 +95,47 @@ export interface Lexed {
 	hiddenAt(offset: number): boolean;
 }
 
+/**
+ * Dataview's inline prefixes, and the marker that breaks them.
+ *
+ * Both are settings the reader can change (`inlineJsQueryPrefix`,
+ * `inlineQueryPrefix`); these are the shipped defaults, which is what a package
+ * author writes against. Dataview matches with `innerText.trim().startsWith`
+ * and tests the JS one first, so the order here is its order.
+ *
+ * INLINE_OFF goes in front for the same reason the fence marker goes on the
+ * end: it has to stop startsWith() from matching while leaving every character
+ * of the query on screen.
+ */
+const INLINE_JS_PREFIX = '$=';
+const INLINE_DQL_PREFIX = '=';
+export const INLINE_OFF = 'off:';
+
+/**
+ * The switched-off spelling, matched whole.
+ *
+ * `off:` alone would be far too eager: someone's own `off: true` in a note about
+ * configuration is not ours to rewrite, and arm() would silently eat the word.
+ * Only `off:` followed by Dataview's own prefix is a marker this code wrote.
+ */
+const INLINE_OFF_JS = INLINE_OFF + INLINE_JS_PREFIX;
+
+/**
+ * Templater's opening delimiter and its modifiers.
+ *
+ * `<%`, then an optional whitespace-control `-` or `_`, then an optional `*`
+ * (execution) or `~`, then `+` for a DYNAMIC command. Lifted from Templater's
+ * own pattern so the two agree on what counts as dynamic.
+ */
+const TEMPLATER_OPEN = /^<%([-_]?)\s*([*~]?)(\+?)/;
+
 export function lex(text: string): Lexed {
-	const blank = [...text];
+	// split(''), not [...text]: every offset written into this array — index,
+	// indexOf, erase, lineAt — is a UTF-16 code unit. Splitting by code point
+	// made one emoji slide the whole blanking by one.
+	const blank = text.split('');
 	const fences: Fence[] = [];
-	const templater: Fragment[] = [];
+	const inline: InlineQuery[] = [];
 	const hidden: [number, number][] = [];
 
 	const starts = lineStarts(text);
@@ -108,27 +185,24 @@ export function lex(text: string): Lexed {
 
 		const char = text[index];
 
-		// Inline code first: its contents are shown, never run, so anything
-		// found inside it would be a false alarm.
+		// Inline code: shown rather than run — except when Dataview claims the
+		// span by prefix, which is the one case where `code` executes.
 		if (char === '`') {
 			const end = closeInlineCode(text, index);
+			const query = inlineQuery(text, index, end);
+			if (query !== null) inline.push({ ...query, line: lineAt(index), hidden: false, offset: index });
 			erase(index, end);
 			index = end;
 			continue;
 		}
 
-		// Templater evaluates JavaScript in EVERY <% ... %>, not only <%* ... %>.
+		// Blanked out of `prose` so the HTML scanner does not read a Templater
+		// expression as markup. The fragments themselves are collected from the
+		// raw text below, because Templater does not care about structure.
 		if (char === '<' && text[index + 1] === '%') {
 			const close = text.indexOf('%>', index + 2);
-			const end = close === -1 ? text.length : close + 2;
-			templater.push({
-				text: text.slice(index + 2, close === -1 ? text.length : close).replace(/^[-_*]|[-_]$/g, ''),
-				line: lineAt(index),
-				hidden: false,
-				offset: index,
-			});
-			erase(index, end);
-			index = end;
+			erase(index, close === -1 ? text.length : close + 2);
+			index = close === -1 ? text.length : close + 2;
 			continue;
 		}
 
@@ -151,12 +225,84 @@ export function lex(text: string): Lexed {
 	// An unclosed %% runs to the end of the file.
 	if (commentFrom !== null) hidden.push([commentFrom, text.length]);
 
+	// Templater reads the raw file and its dynamic processor walks rendered text
+	// nodes, so neither a fence nor a code span hides a fragment from it — which
+	// is why this scans `text` rather than the structure the loop above built.
+	const templater = scanTemplater(text, lineAt);
+
 	for (const fence of fences) fence.hidden = hiddenAt(fence.offset);
 	for (const fragment of templater) fragment.hidden = hiddenAt(fragment.offset);
+	for (const query of inline) query.hidden = hiddenAt(query.offset);
 
 	const prose = blank.join('');
 
-	return { frontmatter, fences, templater, links: readLinks(prose, lineAt, hiddenAt), prose, hiddenAt };
+	return { frontmatter, fences, templater, inline, links: readLinks(prose, lineAt, hiddenAt), prose, hiddenAt };
+}
+
+/** Every <% ... %> in the file, dynamic ones marked. */
+function scanTemplater(text: string, lineAt: (offset: number) => number): Fragment[] {
+	const fragments: Fragment[] = [];
+	let index = 0;
+
+	for (;;) {
+		const open = text.indexOf('<%', index);
+		if (open === -1) return fragments;
+
+		const close = text.indexOf('%>', open + 2);
+		const bodyTo = close === -1 ? text.length : close;
+
+		// disarm() parks its marker directly after "<%", which is also what
+		// stops Templater's dynamic pattern from matching.
+		const off = text.startsWith(INLINE_OFF, open + 2);
+		const opener = TEMPLATER_OPEN.exec(text.slice(open, open + 8));
+
+		fragments.push({
+			text: text.slice(open + (opener?.[0].length ?? 2), bodyTo).replace(/[-_]$/, ''),
+			line: lineAt(open),
+			hidden: false,
+			offset: open,
+			dynamic: opener?.[3] === '+',
+			off,
+		});
+
+		index = close === -1 ? text.length : close + 2;
+	}
+}
+
+/**
+ * Reads one code span as a Dataview query, or null when it is ordinary code.
+ *
+ * `from` is the opening backtick and `to` is one past the closing run — exactly
+ * what closeInlineCode() returns, including the case where it never closed and
+ * the backticks are literal text.
+ */
+function inlineQuery(text: string, from: number, to: number): Omit<InlineQuery, 'line' | 'hidden' | 'offset'> | null {
+	let run = 0;
+	while (text[from + run] === '`') run++;
+
+	const bodyFrom = from + run;
+	// Unclosed: only the backticks were consumed, so there is no body to read.
+	if (to <= bodyFrom + run) return null;
+
+	const body = text.slice(bodyFrom, to - run);
+	// Dataview trims before matching, so "` $= x`" is a query just as "`$= x`" is.
+	const trimmed = body.trimStart();
+
+	const kind = trimmed.startsWith(INLINE_OFF_JS)
+		? 'off'
+		: trimmed.startsWith(INLINE_JS_PREFIX)
+			? 'js'
+			: trimmed.startsWith(INLINE_DQL_PREFIX)
+				? 'dql'
+				: null;
+	if (kind === null) return null;
+
+	const prefix = kind === 'off' ? INLINE_OFF_JS : kind === 'js' ? INLINE_JS_PREFIX : INLINE_DQL_PREFIX;
+	const query = trimmed.slice(prefix.length).trim();
+	// Dataview skips an empty query, so a bare `=` is punctuation, not a finding.
+	if (query === '') return null;
+
+	return { kind, text: query, prefixAt: bodyFrom + (body.length - trimmed.length) };
 }
 
 /** The opening of a fence, or null when this line is not one. */

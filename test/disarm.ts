@@ -11,7 +11,7 @@
  * corrupts the reader's notes, which is worse than not offering the feature.
  * Neither is visible to `tsc`.
  */
-import { disarm, arm, armBlock, disarmedLanguages } from '../src/disarm';
+import { disarm, arm, armBlock, armCanvas, armCanvasBlock, disarmCanvas, disarmedLanguages } from '../src/disarm';
 import { selfStartingFences } from '../src/policy/interpreters';
 
 let failures = 0;
@@ -116,6 +116,90 @@ for (const lang of disarmedLanguages()) {
 }
 check('jsx: is not registered', !disarmedLanguages().some((lang) => lang.includes(':')));
 check('a jsx: block is left alone rather than switched off into a dead end', disarm('```jsx:\nx\n```') === '```jsx:\nx\n```');
+
+console.log('\n--- inline Dataview queries ---');
+// Dataview runs `$= ...` on render with the same reach as a ```dataviewjs
+// block. The lexer used to blank every code span as "shown, never run", which
+// is true of Markdown and false here, so this was live code nobody described.
+const INLINE = 'Total: `$= app.vault.adapter.write("x","y")` today.';
+check('an inline JS query is switched off', disarm(INLINE).includes('`off:$= app.vault'), `-> ${JSON.stringify(disarm(INLINE))}`);
+check('the query text is untouched', disarm(INLINE).includes('app.vault.adapter.write("x","y")'));
+check('it round-trips byte for byte', arm(disarm(INLINE)) === INLINE, `-> ${JSON.stringify(arm(disarm(INLINE)))}`);
+check('leading space inside the span is handled', arm(disarm('`  $= dv.pages()`')) === '`  $= dv.pages()`');
+check('a double-backtick span too', disarm('``$= dv.pages()``').includes('``off:$= dv.pages()``'));
+
+// This is the predicate lifted from Dataview's own reading-view processor:
+//   let text = codeblock.innerText.trim();
+//   if (text.startsWith(settings.inlineJsQueryPrefix)) ...run it...
+const dataviewWouldRun = (span: string) => span.replace(/^`+|`+$/g, '').trim().startsWith('$=');
+check('Dataview matches the armed span', dataviewWouldRun('`$= dv.pages()`'));
+check('Dataview does NOT match the disarmed one', !dataviewWouldRun(disarm('`$= dv.pages()`')));
+
+// A DQL query executes nothing — same call as the ```dataview fence.
+check('an inline DQL query is left running', disarm('`= this.file.name`') === '`= this.file.name`');
+// `off:` alone is a phrase someone may write; only `off:$=` is our marker.
+check("a reader's own `off: true` is left alone", arm('`off: true`') === '`off: true`');
+check('an ordinary code span is left alone', disarm('use `npm run dev` here') === 'use `npm run dev` here');
+check('a bare `=` is punctuation, not a query', disarm('a `=` b') === 'a `=` b');
+check('switching off twice changes nothing', disarm(disarm(INLINE)) === disarm(INLINE));
+
+console.log('\n--- Templater ---');
+// Measured in Obsidian with Templater 2.25: a DYNAMIC command is run by a
+// markdown post-processor the moment the note is opened — in prose, in a code
+// span and inside a fenced block alike. A plain command still waits for the
+// reader, so it stays as it is.
+const DYN = 'Now: <%+ tp.user.run() %>';
+check('a dynamic command is switched off', disarm(DYN) === 'Now: <%off:+ tp.user.run() %>', `-> ${JSON.stringify(disarm(DYN))}`);
+check('it round-trips byte for byte', arm(disarm(DYN)) === DYN);
+check('a plain command is left running', disarm('<% tp.file.title %>') === '<% tp.file.title %>');
+check('an execution command is left running', disarm('<%* await tp.file.move("/x") %>') === '<%* await tp.file.move("/x") %>');
+check('modifiers before the + are handled', arm(disarm('<%-* + x %>')) === '<%-* + x %>');
+check('a dynamic command inside a fence is switched off too', disarm('```text\n<%+ evil() %>\n```').includes('<%off:+'), '-- structure hides nothing from Templater');
+check('a dynamic command inside a code span too', disarm('`<%+ evil() %>`').includes('<%off:+'));
+check('switching off twice changes nothing', disarm(disarm(DYN)) === disarm(DYN));
+
+// This is Templater's own dynamic pattern, lifted from its bundle.
+const templaterWouldRun = (text: string) => /(<%(?:-|_)?\s*[*~]{0,1})\+((?:.|\s)*?%>)/g.test(text);
+check('Templater matches the armed command', templaterWouldRun(DYN));
+check('Templater does NOT match the disarmed one', !templaterWouldRun(disarm(DYN)));
+
+console.log('\n--- canvas ---');
+// A canvas is JSON whose text nodes render exactly like a note, so a block in
+// one runs on opening it. Plain disarm() sees nothing: inside the JSON the
+// fence is a string with escaped newlines.
+const canvas = JSON.stringify({
+	nodes: [
+		{ id: 'a', type: 'text', text: '```dataviewjs\ndv.pages()\n```' },
+		{ id: 'b', type: 'file', file: 'note.md' },
+	],
+	edges: [],
+});
+check('plain disarm() cannot see into a canvas', disarm(canvas) === canvas);
+check('disarmCanvas() switches the node off', disarmCanvas(canvas).includes('dataviewjs-off'));
+check('a canvas round-trips', armCanvas(disarmCanvas(canvas)) === canvas, `-> ${JSON.stringify(armCanvas(disarmCanvas(canvas)))}`);
+check('an inline query inside a canvas node too', disarmCanvas(JSON.stringify({ nodes: [{ type: 'text', text: '`$= dv.pages()`' }] })).includes('off:$='));
+// Re-serialising a canvas with nothing to switch off would rewrite the
+// author's formatting, and the next update would read it as the reader's edit.
+const plainCanvas = '{\n  "nodes": [\n    { "type": "text", "text": "just notes" }\n  ]\n}';
+check('a canvas with nothing to switch off is byte-identical', disarmCanvas(plainCanvas) === plainCanvas);
+check('a canvas that is not JSON is returned unchanged', disarmCanvas('not json at all') === 'not json at all');
+check('a canvas with no nodes array is returned unchanged', disarmCanvas('{"x":1}') === '{"x":1}');
+
+// One block at a time inside a canvas: getSectionInfo() answers null there, so
+// the panel identifies its block by its own code. Without this the reader has
+// no way back except hand-editing JSON — the dead end this whole design avoids.
+const twoNodes = JSON.stringify({
+	nodes: [
+		{ id: 'a', type: 'text', text: '```dataviewjs\nFIRST\n```' },
+		{ id: 'b', type: 'text', text: '```dataviewjs\nSECOND\n```\n\nAlso: `$= dv.pages()`' },
+	],
+});
+const twoOff = disarmCanvas(twoNodes);
+const oneOn = armCanvasBlock(twoOff, 'SECOND\n');
+check('the block asked for is switched on', oneOn.includes('```dataviewjs\\nSECOND'), `-> ${oneOn}`);
+check('the other node stays off', oneOn.includes('```dataviewjs-off\\nFIRST'));
+check('the inline query in the same node stays off', oneOn.includes('off:$='));
+check('a source that matches nothing changes nothing', armCanvasBlock(twoOff, 'NOWHERE') === twoOff);
 
 console.log('\n--- idempotence ---');
 // Installing, then updating, then installing again must not stack suffixes.

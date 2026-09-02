@@ -49,7 +49,7 @@ export function extensionOf(path: string): string {
  * manifest, the catalog preview, the editor — treats them as text. Bytes that
  * are not text would be described by guesswork.
  */
-export function assertContentMatchesExtension(name: string, data: Uint8Array): void {
+export function assertContentMatchesExtension(name: string, data: Uint8Array): string | undefined {
 	const extension = extensionOf(name);
 
 	if (!ALLOWED_EXTENSIONS.includes(extension)) {
@@ -94,6 +94,9 @@ export function assertContentMatchesExtension(name: string, data: Uint8Array): v
 			throw new VerifyError(`${name} does not open as an SVG document`);
 		}
 	}
+
+	// Handed back so the caller doesn't decode the same megabytes a second time.
+	return text;
 }
 
 /** Decodes strictly: invalid UTF-8 means the file is not the text it claims to be. */

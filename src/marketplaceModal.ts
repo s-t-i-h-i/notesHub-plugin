@@ -611,7 +611,9 @@ export class MarketplaceModal extends Modal {
 			// Validation and writing are separate steps because a
 			// confirmation prompt can sit between them. No file exists in
 			// the vault until this point.
-			const plan = await inspectArchive(archive);
+			// The manifest goes in so the plan can say which of the fragments the
+			// server flagged as self-starting we actually managed to switch off.
+			const plan = await inspectArchive(archive, describedBy(pkg));
 
 			// An installed copy is updated in place; everything else is a
 			// fresh install into a new folder, exactly as before.
@@ -631,7 +633,7 @@ export class MarketplaceModal extends Modal {
 					installed.folder.path,
 					installed.record.installedAt,
 				);
-				this.confirmUpdate(pkg, archive, update, button);
+				this.confirmUpdate(pkg, archive, update, plan, button);
 				return;
 			}
 
@@ -654,7 +656,7 @@ export class MarketplaceModal extends Modal {
 		this.bodyEl.createEl('h3', { text: `Install: ${pkg.title}` });
 		this.bodyEl.createDiv({
 			cls: 'marketplace-detail-desc',
-			text: `${plan.paths.length} files, ${formatBytes(plan.totalBytes)}.`,
+			text: `${plan.paths.length} ${plan.paths.length === 1 ? 'file' : 'files'}, ${formatBytes(plan.totalBytes)}.`,
 		});
 
 		const shadowed = findShadowedNotes(this.app, plan.paths);
@@ -673,10 +675,13 @@ export class MarketplaceModal extends Modal {
 		const findings = describedBy(pkg);
 		renderManifest(this.bodyEl, findings, readContext(this.app));
 
-		// Not a warning to click past: it says what will actually happen. The
-		// files arrive whole and readable, and nothing in them starts until
-		// the reader switches it on.
-		if (findings.some((found) => found.trigger === 'render')) {
+		// Not a warning to click past: it says what will actually happen — and it
+		// is now checked rather than asserted, because a sentence like this one
+		// stops being reassurance and becomes a lie the moment the package holds
+		// something disarm() does not know about.
+		if (plan.stillArmed.length > 0) {
+			this.renderStillArmed(plan);
+		} else if (findings.some((found) => found.trigger === 'render')) {
 			this.bodyEl.createDiv({
 				cls: 'marketplace-detail-desc',
 				text:
@@ -720,7 +725,27 @@ export class MarketplaceModal extends Modal {
 	 * archive overwrites files the user may have edited, so the question is
 	 * about the write plan, not only about active content.
 	 */
-	private confirmUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, button: ButtonComponent) {
+	/**
+	 * Files the server called self-starting that we did not switch off.
+	 *
+	 * Named individually: "some of this could not be switched off" with no path
+	 * is an alarm nobody can act on, and the reader can open the archive listing
+	 * above to see what those files are.
+	 */
+	private renderStillArmed(plan: PackagePlan) {
+		const row = this.bodyEl.createDiv({ cls: 'marketplace-finding marketplace-finding-danger' });
+		row.createDiv({
+			cls: 'marketplace-finding-label',
+			text: `${plan.stillArmed.length} ${plan.stillArmed.length === 1 ? 'file' : 'files'} could NOT be switched off`,
+		});
+		row.createDiv({ cls: 'marketplace-finding-path', text: plan.stillArmed.slice(0, 10).join(', ') });
+		row.createDiv({
+			cls: 'marketplace-finding-path',
+			text: 'Code in those runs as soon as you open them. Install only if you trust the author.',
+		});
+	}
+
+	private confirmUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, plan: PackagePlan, button: ButtonComponent) {
 		const modified = update.writes.filter((write) => write.status === 'modified');
 		const count = (status: string) => update.writes.filter((write) => write.status === status).length;
 
@@ -745,6 +770,7 @@ export class MarketplaceModal extends Modal {
 		}
 
 		this.renderNewCapabilities(pkg);
+		if (plan.stillArmed.length > 0) this.renderStillArmed(plan);
 		renderManifest(this.bodyEl, describedBy(pkg), readContext(this.app));
 
 		renderConfirmRow(
