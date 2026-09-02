@@ -29,6 +29,23 @@ import { interpreterFor, selfStartingFences } from './policy/interpreters';
 /** Appended to a fence language so no interpreter matches it. */
 const DISARM_SUFFIX = '-off';
 
+/**
+ * Whether Obsidian can be handed a renderer for this language at all.
+ *
+ * registerMarkdownCodeBlockProcessor() builds the selector `code.language-<lang>`
+ * and runs it over every rendered note in the vault. A language that is not a
+ * valid class name makes that selector throw, inside every reading-view render,
+ * in notes that have nothing to do with any package — which is how `jsx:`
+ * blanked out reading mode vault-wide in 0.2.0.
+ *
+ * So a block whose language cannot carry a renderer is left running rather than
+ * switched off: off with nothing to draw it is a dead block with no way back
+ * except editing the note by hand.
+ */
+function renderable(lang: string): boolean {
+	return /^[a-z][a-z0-9_-]*$/i.test(lang);
+}
+
 /** Attributes that name the remote document an embed would load. */
 const REMOTE_ATTRS = ['src', 'data'];
 
@@ -51,7 +68,7 @@ interface Edit {
  * blank block with no way to turn it back on except editing the note.
  */
 export function disarmedLanguages(): string[] {
-	return selfStartingFences().map((lang) => lang + DISARM_SUFFIX);
+	return selfStartingFences().filter(renderable).map((lang) => lang + DISARM_SUFFIX);
 }
 
 /** Switches off everything that would run on opening the note. */
@@ -136,6 +153,10 @@ function collect(text: string, direction: 'disarm' | 'arm'): Edit[] {
 
 /** The switched-off spelling of a fence language, or null when it should stay as it is. */
 function disarmedLang(fence: Fence): string | null {
+	// Same test disarmedLanguages() applies, so the list switched off and the
+	// list with a renderer stay one list.
+	if (!renderable(fence.lang)) return null;
+
 	const interpreter = interpreterFor(fence.lang);
 	if (interpreter === null) return null;
 	// Only what starts by itself. A Templater template or an Execute Code block

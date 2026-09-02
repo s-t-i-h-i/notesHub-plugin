@@ -7,7 +7,13 @@
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-		"version": "node version-bump.mjs && git add manifest.json versions.json",
+		"bump:patch": "node version-bump.mjs patch",
+		"bump:minor": "node version-bump.mjs minor",
+		"bump:major": "node version-bump.mjs major",
+		"version:patch": "node version-bump.mjs patch",
+		"version:minor": "node version-bump.mjs minor",
+		"version:major": "node version-bump.mjs major",
+		"version": "node version-bump.mjs && git add manifest.json versions.json package.json package-lock.json",
 		"lint": "eslint .",
 		"sync-policy": "node scripts/sync-policy.mjs sync",
 		"uitest": "node scripts/sync-policy.mjs && node test/run.mjs"

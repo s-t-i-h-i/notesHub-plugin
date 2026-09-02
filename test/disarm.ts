@@ -97,9 +97,25 @@ console.log('\n--- the two lists must be one list ---');
 // interpreter table now, and this is what keeps them there.
 for (const lang of selfStartingFences()) {
 	const note = '```' + lang + '\ncode()\n```';
-	check(`${lang} is switched off`, disarm(note).includes('```' + lang + '-off'), `-> ${JSON.stringify(disarm(note))}`);
-	check(`${lang} has a renderer`, disarmedLanguages().includes(lang + '-off'));
+	const registered = disarmedLanguages().includes(lang + '-off');
+	check(
+		`${lang} is switched off exactly when it has a renderer`,
+		disarm(note).includes('```' + lang + '-off') === registered,
+		`-> ${JSON.stringify(disarm(note))}`,
+	);
 }
+check('dataviewjs is one of them', disarmedLanguages().includes('dataviewjs-off'));
+
+console.log('\n--- every registered language survives being a CSS class ---');
+// Obsidian registers a renderer by building the selector `code.language-<lang>`
+// and running it over every note it renders. One name that is not a valid class
+// throws inside every reading-view render in the vault, in notes that have
+// nothing to do with any package. `jsx:` did exactly that in 0.2.0.
+for (const lang of disarmedLanguages()) {
+	check(`code.language-${lang} is a valid selector`, /^[a-zA-Z0-9_-]+$/.test(lang));
+}
+check('jsx: is not registered', !disarmedLanguages().some((lang) => lang.includes(':')));
+check('a jsx: block is left alone rather than switched off into a dead end', disarm('```jsx:\nx\n```') === '```jsx:\nx\n```');
 
 console.log('\n--- idempotence ---');
 // Installing, then updating, then installing again must not stack suffixes.
