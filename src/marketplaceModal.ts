@@ -890,9 +890,7 @@ export class MarketplaceModal extends Modal {
 			await deletePackage(this.plugin.settings, pkg.id);
 			new Notice(`Deleted: ${pkg.title}`);
 			// Reload instead of patching the list in place — the view should
-			// reflect server state, not our guess at it. Tags are cleared too:
-			// that may have been the last package carrying one.
-			this.tags = [];
+			// reflect server state, not our guess at it.
 			void this.load();
 		} catch (error) {
 			console.error(error);

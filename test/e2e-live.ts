@@ -110,7 +110,7 @@ class Vault {
 async function run() {
 	console.log('\n=== 1. publish through the plugin ===');
 	const { app, folder, files } = sourceApp();
-	const capabilities = await publishFolder(app, folder as any, files as any, { title: 'E2E probe', description: 'temporary', tags: ['test'] }, settings);
+	const capabilities = await publishFolder(app, folder as any, files as any, { title: 'E2E probe', description: 'temporary', tags: ['reference'] }, settings);
 	check('the server answered with capabilities', Array.isArray(capabilities) && capabilities.length > 0, `-> ${JSON.stringify(capabilities)}`);
 	check('it reports running code', capabilities.includes('js'));
 	check('it reports writing to the vault', capabilities.includes('vault-write'));

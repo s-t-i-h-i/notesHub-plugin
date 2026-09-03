@@ -2,20 +2,27 @@ import { ButtonComponent, Modal, Notice, Setting, TFile, TFolder } from 'obsidia
 import MarketplacePlugin from './main';
 import { collectFiles, findBrokenLinks, findNameProblems, type BrokenLink } from './files';
 import { publishFolder } from './api/publishApi';
-import { fetchPackages, MAX_IDS_PER_QUERY, type Package } from './api/packagesApi';
+import { fetchPackages, fetchTags, MAX_IDS_PER_QUERY, type Package } from './api/packagesApi';
 import { UnauthorizedError } from './api/api';
 import { extensionOf, hasExif } from './verify';
 import type { Capability } from './policy/types';
 import { formatBytes } from './installs';
 import { describeCapabilities, renderConfirmRow } from './review';
 
-type FieldKey = 'title' | 'description' | 'tags';
+type FieldKey = 'title' | 'description';
 
 const FIELDS: { key: FieldKey; name: string; desc?: string; multiline?: boolean }[] = [
 	{ key: 'title', name: 'Title' },
 	{ key: 'description', name: 'Description', multiline: true },
-	{ key: 'tags', name: 'Tags', desc: 'Comma-separated' },
 ];
+
+/**
+ * How many tags one package may carry.
+ *
+ * The cap and the vocabulary are both enforced by the server; this is the
+ * copy that keeps the form honest about what will be stored.
+ */
+const MAX_TAGS = 4;
 
 /** How many problems to list before it stops being readable. */
 const MAX_LISTED = 20;
@@ -50,6 +57,9 @@ class PublishModal extends Modal {
 	private mine: Package[] = [];
 	/** Package to replace, or '' to publish a new one. */
 	private targetId = '';
+	/** The tag vocabulary, as the server defines it. Empty if the catalog can't be reached. */
+	private vocabulary: string[] = [];
+	private tags: string[] = [];
 
 	constructor(plugin: MarketplacePlugin, folder: TFolder, files: TFile[]) {
 		super(plugin.app);
@@ -59,7 +69,6 @@ class PublishModal extends Modal {
 		this.values = {
 			title: folder.name,
 			description: '',
-			tags: '',
 		};
 	}
 
@@ -91,6 +100,14 @@ class PublishModal extends Modal {
 		const withExif = await this.exifFiles();
 		const bytes = this.files.reduce((sum, file) => sum + file.stat.size, 0);
 		this.mine = await this.fetchOwnPackages();
+
+		// Same reasoning as the package list above: no tags is a worse form
+		// than no publish.
+		try {
+			this.vocabulary = await fetchTags(this.plugin.settings);
+		} catch (error) {
+			console.error('Failed to fetch the tag list', error);
+		}
 
 		this.bodyEl.empty();
 
@@ -269,8 +286,12 @@ class PublishModal extends Modal {
 						// the existing description and tags, not blanks.
 						const target = this.mine.find((pkg) => pkg.id === value);
 						this.values = target
-							? { title: target.title, description: target.description, tags: target.tags.join(', ') }
-							: { title: this.folder.name, description: '', tags: '' };
+							? { title: target.title, description: target.description }
+							: { title: this.folder.name, description: '' };
+						// Tags outside the vocabulary are dropped here rather
+						// than carried invisibly: the server would drop them
+						// anyway, and no chip would show them.
+						this.tags = target ? target.tags.filter((tag) => this.vocabulary.includes(tag)) : [];
 
 						// renderForm() empties the body itself.
 						this.renderForm();
@@ -296,12 +317,39 @@ class PublishModal extends Modal {
 			}
 		}
 
+		this.renderTagPicker();
+
 		new Setting(this.bodyEl).addButton((button) =>
 			button
 				.setButtonText(this.targetId ? 'Publish update' : 'Publish')
 				.setCta()
 				.onClick(() => void this.publish(button)),
 		);
+	}
+
+	/** Tags are picked from a fixed list, not typed: free text was a spam surface. */
+	private renderTagPicker() {
+		if (this.vocabulary.length === 0) return;
+
+		const setting = new Setting(this.bodyEl).setName('Tags').setDesc(`Pick up to ${MAX_TAGS}`);
+		setting.settingEl.addClass('marketplace-wide-field');
+
+		const row = setting.controlEl.createDiv({ cls: 'marketplace-tags' });
+		for (const tag of this.vocabulary) {
+			const chip = row.createSpan({ cls: 'marketplace-tag', text: `#${tag}` });
+			chip.toggleClass('is-active', this.tags.includes(tag));
+
+			chip.addEventListener('click', () => {
+				const at = this.tags.indexOf(tag);
+				if (at >= 0) this.tags.splice(at, 1);
+				else if (this.tags.length >= MAX_TAGS) {
+					new Notice(`Up to ${MAX_TAGS} tags`);
+					return;
+				} else this.tags.push(tag);
+
+				chip.toggleClass('is-active', at < 0);
+			});
+		}
 	}
 
 	private async publish(button: ButtonComponent) {
@@ -323,10 +371,7 @@ class PublishModal extends Modal {
 				{
 					title,
 					description: this.values.description.trim(),
-					tags: this.values.tags
-						.split(',')
-						.map((tag) => tag.trim())
-						.filter((tag) => tag.length > 0),
+					tags: this.tags,
 				},
 				this.plugin.settings,
 				this.targetId || undefined,

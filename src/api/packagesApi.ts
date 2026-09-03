@@ -153,10 +153,9 @@ export async function fetchPackages(
 }
 
 /**
- * Every tag in the catalog.
- *
- * The filter dropdown used to build its options from the loaded packages,
- * which only worked while the client held the whole catalog at once.
+ * The tag vocabulary — a fixed list the server owns, not whatever the catalog
+ * happens to contain. Feeds both the browse filter and the publish picker, so
+ * the plugin never offers a tag the server would drop.
  */
 export async function fetchTags(settings: MarketplaceSettings): Promise<string[]> {
 	const response = await apiRequest(settings, { path: '/tags' });

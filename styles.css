@@ -137,6 +137,13 @@
 	background-color: var(--background-modifier-hover);
 }
 
+/* A picked tag in the publish form. Same chip as everywhere else, so the
+   author sees what the catalog will show. */
+.marketplace-tag.is-active {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
 /* Drzewo bywa długie - własny scroll, żeby przyciski akcji nie uciekły poza modal. */
 .marketplace-tree {
 	max-height: 260px;
