@@ -36,10 +36,7 @@
 
 import { INLINE_OFF, lex, type Fence } from './policy/lex';
 import { scanTags } from './policy/html';
-import { interpreterFor, selfStartingFences } from './policy/interpreters';
-
-/** Appended to a fence language so no interpreter matches it. */
-const DISARM_SUFFIX = '-off';
+import { DISARM_SUFFIX, interpreterFor, selfStartingFences } from './policy/interpreters';
 
 /**
  * Whether Obsidian can be handed a renderer for this language at all.
@@ -70,6 +67,14 @@ interface Edit {
 	from: number;
 	to: number;
 	text: string;
+	/**
+	 * The line the manifest numbers this construct by.
+	 *
+	 * Carried rather than derived from `from`, because the two differ: an
+	 * attribute can sit lines below the `<` its finding is reported at. Matching
+	 * a finding against an edit only works if both agree on the number.
+	 */
+	line: number;
 }
 
 /**
@@ -124,7 +129,7 @@ function collect(text: string, direction: 'disarm' | 'arm'): Edit[] {
 		if (interpreter?.nested === true) {
 			const body = bodyOffset(text, fence.offset);
 			for (const nested of collect(fence.text, direction)) {
-				edits.push({ from: nested.from + body, to: nested.to + body, text: nested.text });
+				edits.push({ from: nested.from + body, to: nested.to + body, text: nested.text, line: nested.line });
 			}
 			continue;
 		}
@@ -133,7 +138,7 @@ function collect(text: string, direction: 'disarm' | 'arm'): Edit[] {
 		if (target === null) continue;
 
 		const span = langSpan(text, fence.offset);
-		if (span !== null) edits.push({ from: span.from, to: span.to, text: target });
+		if (span !== null) edits.push({ from: span.from, to: span.to, text: target, line: fence.line });
 	}
 
 	// Dataview claims an inline span by prefix, so breaking the prefix is the
@@ -144,10 +149,10 @@ function collect(text: string, direction: 'disarm' | 'arm'): Edit[] {
 			// A DQL query executes nothing — left alone for the same reason the
 			// ```dataview fence is.
 			if (query.kind !== 'js') continue;
-			edits.push({ from: query.prefixAt, to: query.prefixAt, text: INLINE_OFF });
+			edits.push({ from: query.prefixAt, to: query.prefixAt, text: INLINE_OFF, line: query.line });
 		} else {
 			if (query.kind !== 'off') continue;
-			edits.push({ from: query.prefixAt, to: query.prefixAt + INLINE_OFF.length, text: '' });
+			edits.push({ from: query.prefixAt, to: query.prefixAt + INLINE_OFF.length, text: '', line: query.line });
 		}
 	}
 
@@ -161,10 +166,10 @@ function collect(text: string, direction: 'disarm' | 'arm'): Edit[] {
 
 		if (direction === 'disarm') {
 			if (!fragment.dynamic) continue;
-			edits.push({ from: at, to: at, text: INLINE_OFF });
+			edits.push({ from: at, to: at, text: INLINE_OFF, line: fragment.line });
 		} else {
 			if (!fragment.off) continue;
-			edits.push({ from: at, to: at + INLINE_OFF.length, text: '' });
+			edits.push({ from: at, to: at + INLINE_OFF.length, text: '', line: fragment.line });
 		}
 	}
 
@@ -188,7 +193,7 @@ function collect(text: string, direction: 'disarm' | 'arm'): Edit[] {
 			if (!tag.attrs.has(from)) continue;
 
 			const at = attributeSpan(text, tag.offset, tag.raw, from);
-			if (at !== null) edits.push({ from: at.from, to: at.to, text: to });
+			if (at !== null) edits.push({ from: at.from, to: at.to, text: to, line: tag.line });
 		}
 	}
 
@@ -277,8 +282,14 @@ export function armCanvas(text: string): string {
  * armBlock() finds its block by line, which a canvas cannot provide —
  * getSectionInfo() answers null there because the Markdown lives inside JSON.
  * The block's own code is the only handle the rendered panel has, so that is
- * what identifies it; the first node holding it wins, and everything else in
- * that node stays as it was.
+ * what identifies it.
+ *
+ * Matched as a switched-off fence whose body IS the code, never as a substring
+ * of the node: both the node and the body are written by the package author, so
+ * a plain indexOf could be pointed at a decoy copy one line below something else
+ * and arm that instead — the reader would approve one block and start another.
+ * An ambiguous match arms nothing, because there is no safe way to guess which
+ * block the reader was looking at.
  */
 export function armCanvasBlock(text: string, source: string): string {
 	let armedOne = false;
@@ -286,13 +297,60 @@ export function armCanvasBlock(text: string, source: string): string {
 	return mapCanvas(text, (node) => {
 		if (armedOne) return node;
 
-		const at = node.indexOf(source);
-		if (at === -1) return node;
+		const [fence, ...rest] = lex(node).fences.filter(
+			(candidate) => candidate.lang.endsWith(DISARM_SUFFIX) && candidate.text === source,
+		);
+		if (fence === undefined || rest.length > 0) return node;
 
 		armedOne = true;
-		// The body starts one line below the fence that opens it.
-		return armBlock(node, lineOf(node, at) - 1);
+		return armBlock(node, fence.line);
 	});
+}
+
+/**
+ * The lines disarm() actually switched something off in.
+ *
+ * The manifest reports one line per finding, so this is what lets a caller ask
+ * "was THIS fragment neutralised" instead of "did this file change at all" —
+ * one construct we know how to switch off must not vouch for one we do not.
+ */
+export function disarmedLines(text: string): Set<number> {
+	return new Set(collect(text, 'disarm').map((edit) => edit.line));
+}
+
+/**
+ * The same for a canvas, whose findings are numbered by the line inside the
+ * node they came from — so the answer is the union over its text nodes.
+ *
+ * `undisarmable` reports a node that is not Markdown at all. A link card embeds
+ * a remote page with no token to break, so nothing here can switch it off, and
+ * saying so is the only honest answer.
+ */
+export function disarmedCanvasLines(text: string): { lines: Set<number>; undisarmable: boolean } {
+	const lines = new Set<number>();
+	let undisarmable = false;
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return { lines, undisarmable: true };
+	}
+
+	const nodes = (parsed as { nodes?: unknown })?.nodes;
+	if (!Array.isArray(nodes)) return { lines, undisarmable: false };
+
+	for (const node of nodes) {
+		const entry = node as { type?: unknown; text?: unknown };
+
+		if (entry?.type === 'text' && typeof entry.text === 'string') {
+			for (const line of disarmedLines(entry.text)) lines.add(line);
+		} else if (entry?.type === 'link') {
+			undisarmable = true;
+		}
+	}
+
+	return { lines, undisarmable };
 }
 
 /**

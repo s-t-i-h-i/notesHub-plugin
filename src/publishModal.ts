@@ -27,6 +27,22 @@ const MAX_TAGS = 4;
 /** How many problems to list before it stops being readable. */
 const MAX_LISTED = 20;
 
+/**
+ * The tags to pre-select for a package being replaced.
+ *
+ * Anything outside the vocabulary is dropped rather than carried invisibly: the
+ * server drops it too, and no chip would show it.
+ *
+ * Unless the vocabulary is itself what is missing. An unreachable catalog
+ * leaves it empty, which would filter every tag away while renderTagPicker()
+ * stays hidden — so publishing an update would silently clear tags the package
+ * already had. With nothing to check against, they go back unchanged and the
+ * server's own filter decides.
+ */
+function keepKnownTags(tags: string[], vocabulary: string[]): string[] {
+	return vocabulary.length === 0 ? [...tags] : tags.filter((tag) => vocabulary.includes(tag));
+}
+
 /** Checks config and the folder, and only opens the form if publishing could actually succeed. */
 export function openPublishModal(plugin: MarketplacePlugin, folder: TFolder): void {
 	// These checks run before collecting files: making the user fill out a
@@ -288,10 +304,7 @@ class PublishModal extends Modal {
 						this.values = target
 							? { title: target.title, description: target.description }
 							: { title: this.folder.name, description: '' };
-						// Tags outside the vocabulary are dropped here rather
-						// than carried invisibly: the server would drop them
-						// anyway, and no chip would show them.
-						this.tags = target ? target.tags.filter((tag) => this.vocabulary.includes(tag)) : [];
+						this.tags = target ? keepKnownTags(target.tags, this.vocabulary) : [];
 
 						// renderForm() empties the body itself.
 						this.renderForm();

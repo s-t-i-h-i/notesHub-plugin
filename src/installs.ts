@@ -13,7 +13,7 @@ import {
 } from './constants';
 import { readTarGz, assertSafeEntryName, type TarEntry } from './tar';
 import { assertContentMatchesExtension, extensionOf } from './verify';
-import { arm, armCanvas, disarm, disarmCanvas } from './disarm';
+import { arm, armCanvas, disarm, disarmCanvas, disarmedCanvasLines, disarmedLines } from './disarm';
 import type { Capability, Finding } from './policy/types';
 
 /**
@@ -113,11 +113,15 @@ export async function inspectArchive(archive: ArrayBuffer, findings: Finding[] =
 	const paths: string[] = [];
 	const seen = new Set<string>();
 	const stillArmed: string[] = [];
-	const selfStarting = new Set(
-		findings
-			.filter((found) => found.trigger === 'render' && found.capabilities.some((c) => DISARMED_CAPABILITIES.includes(c)))
-			.map((found) => found.path),
-	);
+	// Keyed by path AND line, because the answer is per fragment: see
+	// allNeutralised().
+	const selfStarting = new Map<string, number[]>();
+	for (const found of findings) {
+		if (found.trigger !== 'render') continue;
+		if (!found.capabilities.some((c) => DISARMED_CAPABILITIES.includes(c))) continue;
+
+		selfStarting.set(found.path, [...(selfStarting.get(found.path) ?? []), found.line]);
+	}
 	let totalBytes = 0;
 
 	await eachEntryAsync(archive, async (entry) => {
@@ -131,9 +135,8 @@ export async function inspectArchive(archive: ArrayBuffer, findings: Finding[] =
 
 		assertContentMatchesExtension(path, entry.data);
 
-		// toWrite() hands back the very same array when it changed nothing, so
-		// identity is the answer to "did we switch anything off in this file".
-		if (selfStarting.has(entry.name) && toWrite(entry) === entry.data) stillArmed.push(path);
+		const flagged = selfStarting.get(entry.name);
+		if (flagged !== undefined && !allNeutralised(entry, flagged)) stillArmed.push(path);
 
 		paths.push(path);
 		totalBytes += entry.data.length;
@@ -299,6 +302,36 @@ function toWrite(entry: TarEntry): Uint8Array {
 }
 
 /**
+ * Whether every fragment the server flagged on this file was switched off.
+ *
+ * Per finding, not per file. The old test asked only whether toWrite() had
+ * changed anything at all, so one construct disarm() understands vouched for
+ * every other one beside it: a canvas link card, or a ```jsx: fence next to a
+ * ```dataviewjs one, shipped live under the sentence promising the opposite.
+ *
+ * Findings are matched by line, which is all the manifest carries. Markdown
+ * nested inside an admonition is numbered relative to its own block, so a
+ * fragment there can in principle share a number with one outside it; that is a
+ * narrower miss than the whole-file answer it replaces.
+ */
+function allNeutralised(entry: TarEntry, flagged: number[]): boolean {
+	const extension = extensionOf(entry.name);
+	// Everything else toWrite() copies through untouched, so nothing was.
+	if (extension !== 'md' && extension !== 'canvas') return false;
+
+	const text = new TextDecoder().decode(entry.data);
+
+	if (extension === 'canvas') {
+		const { lines, undisarmable } = disarmedCanvasLines(text);
+		return !undisarmable && flagged.every((line) => lines.has(line));
+	}
+
+	const lines = disarmedLines(text);
+
+	return flagged.every((line) => lines.has(line));
+}
+
+/**
  * How an installed file compares to the archive.
  *
  * For notes the comparison is made with everything switched back on, so a
@@ -330,11 +363,25 @@ function compare(path: string, current: ArrayBuffer, entry: TarEntry, touched: b
  *
  * Switched back on, so a block the reader enabled is not read as an edit, and
  * re-serialised, so Obsidian's own rewriting of the file's indentation is not
- * either. Node positions still differ when the reader really moved something.
+ * either. Its `metadata` stamp goes too: Obsidian writes one into every canvas
+ * it opens, so without this, merely looking at a canvas made the next update
+ * call it a local edit and trash it. Frontmatter the author actually wrote is
+ * kept, and node positions still differ when the reader moved something.
  */
 function canvasKey(text: string): string {
 	try {
-		return JSON.stringify(JSON.parse(armCanvas(text)));
+		const canvas = JSON.parse(armCanvas(text)) as {
+			metadata?: { version?: unknown; frontmatter?: Record<string, unknown> };
+		};
+
+		const metadata = canvas.metadata;
+		if (metadata) {
+			delete metadata.version;
+			if (metadata.frontmatter && Object.keys(metadata.frontmatter).length === 0) delete metadata.frontmatter;
+			if (Object.keys(metadata).length === 0) delete canvas.metadata;
+		}
+
+		return JSON.stringify(canvas);
 	} catch {
 		return text;
 	}

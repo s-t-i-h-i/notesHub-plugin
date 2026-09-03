@@ -201,6 +201,33 @@ check('the other node stays off', oneOn.includes('```dataviewjs-off\\nFIRST'));
 check('the inline query in the same node stays off', oneOn.includes('off:$='));
 check('a source that matches nothing changes nothing', armCanvasBlock(twoOff, 'NOWHERE') === twoOff);
 
+// Both the node and the block body are written by the package author, so
+// finding the block by plain substring could be aimed at a decoy: a copy of the
+// body one line under something else, so that arming "the line above" switched
+// on a construct the reader never saw.
+const decoy = JSON.stringify({
+	nodes: [{ id: 'a', type: 'text', text: ['`$= dv.pages()`', 'DECOY', '', '```dataviewjs', 'DECOY', '```'].join('\n') }],
+});
+const decoyArmed = armCanvasBlock(disarmCanvas(decoy), 'DECOY\n');
+check('the decoy does not redirect the button', decoyArmed.includes('off:$='), `-> ${decoyArmed}`);
+check('and the block the reader clicked is the one switched on', decoyArmed.includes('```dataviewjs\\nDECOY'), `-> ${decoyArmed}`);
+
+console.log('\n--- shapes that used to slip past ---');
+// Templater's own pattern puts an unbounded \s* between "<%" and the '+', so a
+// fixed-size read of the opening hid a dynamic command while Templater ran it.
+const spaced = 'Hello <%      + tp.user.evil() %> world';
+check('a dynamic command padded with whitespace is switched off', disarm(spaced) !== spaced, `-> ${disarm(spaced)}`);
+check('and it round-trips', arm(disarm(spaced)) === spaced);
+
+// Dataview claims a span with querySelectorAll("code") — it never asks whether
+// Markdown made the element from backticks.
+const rawCode = 'Total: <code>$= dv.pages()</code>';
+check('an inline query written as raw HTML is switched off', disarm(rawCode).includes('<code>off:$='), `-> ${disarm(rawCode)}`);
+check('and it round-trips', arm(disarm(rawCode)) === rawCode);
+// The same tag shown inside a fence is being displayed, not rendered.
+const shownCode = '```html\n<code>$= dv.pages()</code>\n```';
+check('the same tag inside a fence is left alone', disarm(shownCode) === shownCode);
+
 console.log('\n--- idempotence ---');
 // Installing, then updating, then installing again must not stack suffixes.
 check('switching off twice changes nothing the second time', disarm(disarm(DV)) === disarm(DV));

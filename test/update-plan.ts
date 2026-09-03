@@ -87,6 +87,22 @@ class FakeVault {
 	}
 }
 
+/**
+ * A canvas as the package ships it, optionally with what Obsidian adds.
+ *
+ * `metadata` is stamped into every canvas Obsidian opens, so a reader who only
+ * looked at one still ends up with a file that differs byte for byte.
+ */
+function canvas(extra: Record<string, unknown> = {}, x = 0): string {
+	return JSON.stringify({
+		nodes: [{ id: 'n1', type: 'text', text: 'hello', x, y: 0, width: 100, height: 100 }],
+		edges: [],
+		...extra,
+	});
+}
+
+const STAMP = { metadata: { version: '1.0-1.0', frontmatter: {} } };
+
 async function run() {
 	// The archive the server would hand us.
 	const archive = (
@@ -96,6 +112,9 @@ async function run() {
 			{ name: 'Edited.md', data: encoder.encode('v2 text') },
 			{ name: 'New.md', data: encoder.encode('brand new') },
 			{ name: 'Note.md', data: encoder.encode('v2 text') },
+			{ name: 'Board.canvas', data: encoder.encode(canvas()) },
+			{ name: 'Moved.canvas', data: encoder.encode(canvas()) },
+			{ name: 'Front.canvas', data: encoder.encode(canvas()) },
 		])
 	).buffer as ArrayBuffer;
 
@@ -110,6 +129,12 @@ async function run() {
 	vault.addFile(`${ROOT}/note.md`, 'v1 text', INSTALLED_AT - 100);
 	// The user's own note, not part of the package.
 	vault.addFile(`${ROOT}/Mine.md`, 'my notes', INSTALLED_AT + 5_000);
+	// Opened but never edited: same canvas, plus the stamp Obsidian adds.
+	vault.addFile(`${ROOT}/Board.canvas`, canvas(STAMP), INSTALLED_AT + 5_000);
+	// Really edited — the reader dragged a node.
+	vault.addFile(`${ROOT}/Moved.canvas`, canvas(STAMP, 500), INSTALLED_AT + 5_000);
+	// Frontmatter someone wrote is content, not bookkeeping.
+	vault.addFile(`${ROOT}/Front.canvas`, canvas({ metadata: { version: '1.0-1.0', frontmatter: { tags: ['mine'] } } }), INSTALLED_AT + 5_000);
 
 	const trashed: string[] = [];
 	const app: any = {
@@ -134,6 +159,11 @@ async function run() {
 	check('changed upstream, edited locally -> modified', status('Edited.md') === 'modified', `-> ${status('Edited.md')}`);
 	check('absent from the folder -> new', status('New.md') === 'new', `-> ${status('New.md')}`);
 	check('case-insensitive match finds the existing file', status('Note.md') === 'changed', `-> ${status('Note.md')}`);
+	// Obsidian stamps a canvas on open, so without this every canvas in every
+	// package reads as a local edit the moment the reader looks at it.
+	check('a canvas the reader only opened is not a local edit', status('Board.canvas') === 'identical', `-> ${status('Board.canvas')}`);
+	check('a canvas the reader really moved still is', status('Moved.canvas') === 'modified', `-> ${status('Moved.canvas')}`);
+	check('canvas frontmatter is content, not bookkeeping', status('Front.canvas') === 'modified', `-> ${status('Front.canvas')}`);
 
 	await applyUpdate(app, archive, update);
 

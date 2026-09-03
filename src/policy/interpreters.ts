@@ -45,6 +45,12 @@ const FENCES: Record<string, Interpreter> = {
 	mermaid: { name: 'Mermaid', trigger: 'render', js: false, base: [] },
 };
 
+/**
+ * Appended to a fence language to switch it off. Lives here because both the
+ * suffix and the table it applies to have to agree on what it means.
+ */
+export const DISARM_SUFFIX = '-off';
+
 /** Execute Code runs the block through a real interpreter on the reader's machine. */
 const EXECUTE_CODE = /^run-[a-z0-9+#-]+$/;
 
@@ -92,6 +98,17 @@ export function interpreterFor(lang: string): Interpreter | null {
 
 	const known = FENCES[lang];
 	if (known) return known;
+
+	// A switched-off block still ships its code, and the suffix is not ours
+	// alone — an author can write ```dataviewjs-off themselves. Describing it as
+	// an unrecognised block gave it no capabilities at all, so a package whose
+	// only content was a pre-disarmed block advertised itself as doing nothing
+	// while offering a one-click button to run it. Reported as what it is: the
+	// same interpreter, waiting on a click instead of starting by itself.
+	if (lang.endsWith(DISARM_SUFFIX)) {
+		const armed = FENCES[lang.slice(0, -DISARM_SUFFIX.length)];
+		if (armed && armed.trigger === 'render' && armed.js) return { ...armed, trigger: 'click' };
+	}
 
 	if (EXECUTE_CODE.test(lang)) {
 		return { name: 'Execute Code', trigger: 'click', js: lang === 'run-js', base: ['native'] };

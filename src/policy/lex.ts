@@ -129,6 +129,17 @@ const INLINE_OFF_JS = INLINE_OFF + INLINE_JS_PREFIX;
  */
 const TEMPLATER_OPEN = /^<%([-_]?)\s*([*~]?)(\+?)/;
 
+/**
+ * The switched-off spelling of a dynamic command, matched whole.
+ *
+ * Same rule as INLINE_OFF_JS, and for the same reason: a bare `off:` after `<%`
+ * says nothing about who wrote it. Requiring the `+` that disarm() parked the
+ * marker in front of means arm() only ever undoes its own edit — otherwise an
+ * author could ship `<%off:+ ... %>`, which the analysis reads as a plain
+ * command, and have arm() promote it to one that runs on open.
+ */
+const TEMPLATER_OFF = /^<%off:([-_]?)\s*([*~]?)\+/;
+
 export function lex(text: string): Lexed {
 	// split(''), not [...text]: every offset written into this array — index,
 	// indexOf, erase, lineAt — is a UTF-16 code unit. Splitting by code point
@@ -236,6 +247,10 @@ export function lex(text: string): Lexed {
 
 	const prose = blank.join('');
 
+	// After the blanking, so a <code> tag shown inside a fence or a code span is
+	// not read as one Dataview would execute.
+	inline.push(...scanCodeTags(prose, lineAt, hiddenAt));
+
 	return { frontmatter, fences, templater, inline, links: readLinks(prose, lineAt, hiddenAt), prose, hiddenAt };
 }
 
@@ -253,8 +268,13 @@ function scanTemplater(text: string, lineAt: (offset: number) => number): Fragme
 
 		// disarm() parks its marker directly after "<%", which is also what
 		// stops Templater's dynamic pattern from matching.
-		const off = text.startsWith(INLINE_OFF, open + 2);
-		const opener = TEMPLATER_OPEN.exec(text.slice(open, open + 8));
+		const fragment = text.slice(open, bodyTo);
+		const off = TEMPLATER_OFF.test(fragment);
+		// The whole fragment, not a fixed window: Templater's own pattern puts
+		// an unbounded \s* between "<%" and the '+', so reading a few bytes
+		// meant six spaces were enough to hide a dynamic command from us while
+		// Templater still ran it.
+		const opener = TEMPLATER_OPEN.exec(fragment);
 
 		fragments.push({
 			text: text.slice(open + (opener?.[0].length ?? 2), bodyTo).replace(/[-_]$/, ''),
@@ -284,7 +304,16 @@ function inlineQuery(text: string, from: number, to: number): Omit<InlineQuery, 
 	// Unclosed: only the backticks were consumed, so there is no body to read.
 	if (to <= bodyFrom + run) return null;
 
-	const body = text.slice(bodyFrom, to - run);
+	return inlineBody(text.slice(bodyFrom, to - run), bodyFrom);
+}
+
+/**
+ * Classifies the text inside a code element, wherever it came from.
+ *
+ * `bodyFrom` is where that text starts in the document, so `prefixAt` lands on
+ * the real offset disarm() has to break.
+ */
+function inlineBody(body: string, bodyFrom: number): Omit<InlineQuery, 'line' | 'hidden' | 'offset'> | null {
 	// Dataview trims before matching, so "` $= x`" is a query just as "`$= x`" is.
 	const trimmed = body.trimStart();
 
@@ -303,6 +332,37 @@ function inlineQuery(text: string, from: number, to: number): Omit<InlineQuery, 
 	if (query === '') return null;
 
 	return { kind, text: query, prefixAt: bodyFrom + (body.length - trimmed.length) };
+}
+
+/**
+ * Dataview inline queries written as raw HTML.
+ *
+ * Dataview claims a span with `querySelectorAll("code")` and a startsWith on
+ * the element's text — it never asks whether Markdown made that element from
+ * backticks. A `<code>$= ...</code>` written straight into the note therefore
+ * runs exactly like a backtick span, and reading only backticks left it
+ * invisible to the manifest and untouched by disarm().
+ *
+ * Scanned over `prose`, where fences and code spans are already blanked: inside
+ * either of those the tag is shown rather than rendered.
+ */
+const CODE_TAG = /(<code(?:\s[^>]*)?>)([\s\S]*?)<\/code\s*>/gi;
+
+function scanCodeTags(prose: string, lineAt: (offset: number) => number, hiddenAt: (offset: number) => boolean): InlineQuery[] {
+	const queries: InlineQuery[] = [];
+
+	for (let match = CODE_TAG.exec(prose); match !== null; match = CODE_TAG.exec(prose)) {
+		const open = match[1] ?? '';
+		const query = inlineBody(match[2] ?? '', match.index + open.length);
+		if (query === null) continue;
+
+		// Numbered by the prefix rather than by the tag, so the line the
+		// manifest reports is the line disarm() edits even when the opening tag
+		// is spread over several.
+		queries.push({ ...query, line: lineAt(query.prefixAt), hidden: hiddenAt(query.prefixAt), offset: match.index });
+	}
+
+	return queries;
 }
 
 /** The opening of a fence, or null when this line is not one. */

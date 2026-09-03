@@ -28,7 +28,7 @@ Notes Hub is a community-built collection of notes for Obsidian. If you spent ti
 
 ## Installation
 
-Notes Hub is not yet in the Obsidian Community Plugins directory. Until it is, install manually:
+Download Notes Hub from the Obsidian Community Plugins directory or install it manually:
 
 1. Download the latest release (`main.js`, `manifest.json`, `styles.css`) from the Releases page.
 2. Create a folder named `notes-hub` inside `<your-vault>/.obsidian/plugins/`.
