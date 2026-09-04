@@ -5,6 +5,20 @@
 	width: min(720px, 92vw);
 }
 
+.marketplace-welcome.modal {
+	width: min(440px, 92vw);
+}
+
+.marketplace-welcome .modal-content {
+	text-align: center;
+}
+
+.marketplace-welcome-logo {
+	width: 96px;
+	height: 96px;
+	margin-bottom: var(--size-4-2);
+}
+
 /* Publish form fields: label above the control, control stretched full
    width - Obsidian's default Setting row is a name/control two-column
    split, which turns a description textarea into a cramped sliver. */

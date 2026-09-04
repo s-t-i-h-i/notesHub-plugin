@@ -48,6 +48,8 @@ export interface MarketplaceSettings {
 	 * unresolvable, which degrades to a plain fresh install.
 	 */
 	installs: Record<string, InstallRecord>;
+	/** Whether the first-run welcome modal has already been shown. */
+	hasSeenWelcome: boolean;
 }
 
 export const DEFAULT_SETTINGS: MarketplaceSettings = {
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: MarketplaceSettings = {
 	userId: '',
 	downloadFolder: 'marketplace-downloads',
 	installs: {},
+	hasSeenWelcome: false,
 };
 
 export class MarketplaceSettingTab extends PluginSettingTab {

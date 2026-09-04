@@ -7,12 +7,19 @@ import {
 } from './settings';
 import { openPublishModal } from './publishModal';
 import { openMarketplaceModal } from './marketplaceModal';
+import { openWelcomeModal } from './welcomeModal';
 
 export default class MarketplacePlugin extends Plugin {
 	settings!: MarketplaceSettings;
 
 	async onload() {
 		await this.loadSettings();
+
+		if (!this.settings.hasSeenWelcome) {
+			openWelcomeModal(this);
+			this.settings.hasSeenWelcome = true;
+			await this.saveSettings();
+		}
 
 		this.addCommand({
 			id: 'open-marketplace',
@@ -54,6 +61,10 @@ export default class MarketplacePlugin extends Plugin {
 		// object": that would also let a hand-edited data.json put an object
 		// on `token`, and typeof [] is 'object' too.
 		this.settings.installs = readInstalls(stored.installs);
+
+		if (typeof stored.hasSeenWelcome === 'boolean') {
+			this.settings.hasSeenWelcome = stored.hasSeenWelcome;
+		}
 	}
 
 	async saveSettings() {
