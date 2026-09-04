@@ -84,9 +84,9 @@ export function assertContentMatchesExtension(name: string, data: Uint8Array): s
 	//
 	// ponytail: no XML well-formedness check — that needs a parser the Workers
 	// runtime doesn't have, and browsers are lenient anyway, so a strict pass
-	// here would not make our reading and theirs agree. The tag scanner in the
-	// policy layer is what actually describes the file. Upgrade path: a real
-	// XML parser, if SVG ever turns out to be worth one.
+	// here would not make our reading and theirs agree. scanSvg() is what
+	// refuses the contents. Upgrade path: a real XML parser, if SVG ever turns
+	// out to be worth one.
 	if (extension === 'svg') {
 		// decodeText() already dropped a BOM: TextDecoder strips it unless ignoreBOM is set.
 		const start = text.trimStart();
