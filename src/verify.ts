@@ -46,8 +46,8 @@ export function extensionOf(path: string): string {
  * Refuses a file whose contents contradict its extension.
  *
  * Text formats also have to decode as UTF-8, because every later step — the
- * manifest, the catalog preview, the editor — treats them as text. Bytes that
- * are not text would be described by guesswork.
+ * content check, the catalog preview, the editor — treats them as text. Bytes
+ * that are not text could not be checked at all.
  */
 export function assertContentMatchesExtension(name: string, data: Uint8Array): string | undefined {
 	const extension = extensionOf(name);

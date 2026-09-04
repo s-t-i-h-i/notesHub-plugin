@@ -1,9 +1,10 @@
 /**
- * End-to-end against the LIVE local worker: publish -> catalog -> manifest ->
- * download -> install -> update -> delete.
+ * End-to-end against the LIVE local worker: publish -> catalog -> download ->
+ * install -> update -> delete.
  *
- * The point is the security chain, not the HTTP: what the SERVER says a package
- * does, and what actually lands on disk after the plugin has written it.
+ * The point is the security chain, not the HTTP. Two halves: a package of
+ * inert content goes all the way through untouched, and a package with a
+ * single executable fragment never gets in at all.
  */
 import { readFileSync } from 'node:fs';
 import { TFile, TFolder } from 'obsidian';
@@ -51,39 +52,48 @@ if (!/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(API_BASE_URL)) {
 
 const enc = new TextEncoder();
 
-// One note carrying every shape that matters, plus a canvas.
+// Everything here is inert and has to survive the round trip unchanged. Each
+// line is something a plain-text rule would plausibly get wrong.
 const NOTE = [
 	'# Course',
 	'',
-	'```dataviewjs',
-	'app.vault.adapter.write("pwn.md", "owned");',
+	'```dataview',
+	'TABLE file.name FROM "Course"',
 	'```',
-	'',
-	'Inline JS: `$= app.vault.adapter.write("pwn2.md","x")`',
 	'',
 	'Inline DQL: `= this.file.name`',
 	'',
-	'Dynamic: <%+ tp.user.evil() %>',
+	'```mermaid',
+	'graph TD',
+	'A-->B',
+	'```',
 	'',
-	'Plain command: <% tp.file.title %>',
+	'How you would write one:',
 	'',
-	'<iframe src="https://embed.example.com/x"></iframe>',
+	'````text',
+	'```dataviewjs',
+	'dv.list([])',
+	'```',
+	'````',
 	'',
 	'![](https://tracker.example.com/p.png)',
 	'',
 ].join('\n');
 
 const CANVAS = JSON.stringify({
-	nodes: [{ id: 'a', type: 'text', x: 0, y: 0, width: 400, height: 200, text: '```dataviewjs\ndv.pages()\n```' }],
+	nodes: [{ id: 'a', type: 'text', x: 0, y: 0, width: 400, height: 200, text: '# Board\n\nPlain text.' }],
 	edges: [],
 });
 
 const SOURCE: Record<string, string> = { 'Course/note.md': NOTE, 'Course/board.canvas': CANVAS, 'Course/plain.md': '# Just text\n' };
 
-function sourceApp() {
-	const files = Object.keys(SOURCE).map((path) => Object.assign(new TFile(), { path, extension: path.split('.').pop(), name: path.split('/').pop() }));
-	const folder = Object.assign(new TFolder(), { path: 'Course', isRoot: () => false });
-	const app: any = { vault: { readBinary: async (f: any) => enc.encode(SOURCE[f.path]).buffer } };
+/** One executable fragment, in a package that is otherwise ordinary. */
+const ARMED: Record<string, string> = { 'Armed/note.md': '# Lesson\n\n```dataviewjs\napp.vault.adapter.write("pwn.md", "owned");\n```\n' };
+
+function sourceApp(source: Record<string, string> = SOURCE, root = 'Course') {
+	const files = Object.keys(source).map((path) => Object.assign(new TFile(), { path, extension: path.split('.').pop(), name: path.split('/').pop() }));
+	const folder = Object.assign(new TFolder(), { path: root, isRoot: () => false });
+	const app: any = { vault: { readBinary: async (f: any) => enc.encode(source[f.path]).buffer } };
 	return { app, folder, files };
 }
 
@@ -110,10 +120,25 @@ class Vault {
 async function run() {
 	console.log('\n=== 1. publish through the plugin ===');
 	const { app, folder, files } = sourceApp();
-	const capabilities = await publishFolder(app, folder as any, files as any, { title: 'E2E probe', description: 'temporary', tags: ['reference'] }, settings);
-	check('the server answered with capabilities', Array.isArray(capabilities) && capabilities.length > 0, `-> ${JSON.stringify(capabilities)}`);
-	check('it reports running code', capabilities.includes('js'));
-	check('it reports writing to the vault', capabilities.includes('vault-write'));
+	let published = '';
+	try {
+		await publishFolder(app, folder as any, files as any, { title: 'E2E probe', description: 'temporary', tags: ['reference'] }, settings);
+	} catch (error) {
+		published = String((error as Error).message);
+	}
+	check('inert content publishes', published === '', `-> ${published}`);
+
+	// The half that matters most: the gate is on the server, so it holds even
+	// for a sender who never ran the plugin's own pre-check.
+	const armed = sourceApp(ARMED, 'Armed');
+	let refusal = '';
+	try {
+		await publishFolder(armed.app, armed.folder as any, armed.files as any, { title: 'E2E armed', description: 'temporary', tags: ['reference'] }, settings);
+	} catch (error) {
+		refusal = String((error as Error).message);
+	}
+	check('a package with executable content is refused', refusal !== '', '-> it was accepted');
+	check('the refusal names the file and the line', refusal.includes('note.md:3'), `-> ${refusal}`);
 
 	console.log('\n=== 2. catalog ===');
 	const listed = await fetchPackages(settings, { limit: 20, sort: 'newest' } as any);
@@ -122,18 +147,11 @@ async function run() {
 	check('the package is in the catalog', pkg !== undefined);
 	if (!pkg) { console.log('\nABORT'); process.exit(1); }
 	check('the row carries a sha256', typeof pkg.sha256 === 'string' && pkg.sha256.length === 64);
-	check('the row carries policy_version 2', pkg.policyVersion === 2, `-> ${pkg.policyVersion}`);
+	check('the armed package never reached the catalog', !(rows as any[]).some((p) => p.title === 'E2E armed'));
 
-	console.log('\n=== 3. the manifest the SERVER computed ===');
+	console.log('\n=== 3. package detail ===');
 	const detail = await fetchPackage(settings, pkg.id);
-	const findings = (detail as any).manifest?.findings ?? [];
-	const has = (i: string, t: string) => findings.some((f: any) => f.interpreter === i && f.trigger === t);
-	check('fenced dataviewjs -> Dataview / render', has('Dataview', 'render'));
-	check('inline `$=` is described', findings.filter((f: any) => f.interpreter === 'Dataview' && f.trigger === 'render').length >= 2, `-> ${findings.filter((f:any)=>f.interpreter==='Dataview').length} Dataview findings`);
-	check('dynamic Templater -> render, not command', findings.some((f: any) => f.interpreter === 'Templater' && f.trigger === 'render'));
-	check('plain Templater -> command', findings.some((f: any) => f.interpreter === 'Templater' && f.trigger === 'command'));
-	check('the canvas node is described', findings.some((f: any) => f.path === 'board.canvas'));
-	check('the iframe is described', findings.some((f: any) => f.capabilities.includes('remote-embed')));
+	check('the detail view lists the archive contents', (detail as any).structure.length === 3, `-> ${JSON.stringify((detail as any).structure)}`);
 
 	console.log('\n=== 4. download + integrity ===');
 	const archive = await downloadPackageArchive(settings, pkg.id, pkg.sha256);
@@ -142,10 +160,9 @@ async function run() {
 	try { await downloadPackageArchive(settings, pkg.id, 'f'.repeat(64)); } catch { rejected = true; }
 	check('a wrong sha256 is refused', rejected);
 
-	console.log('\n=== 5. inspect: is the promise true for THIS package? ===');
-	const plan = await inspectArchive(archive, findings);
+	console.log('\n=== 5. inspect ===');
+	const plan = await inspectArchive(archive);
 	check('three files planned', plan.paths.length === 3, `-> ${JSON.stringify(plan.paths)}`);
-	check('nothing was left armed', plan.stillArmed.length === 0, `-> ${JSON.stringify(plan.stillArmed)}`);
 
 	console.log('\n=== 6. what actually lands on disk ===');
 	const vault = new Vault();
@@ -154,15 +171,15 @@ async function run() {
 	const note = vault.text(`${root}/note.md`);
 	const canvas = vault.text(`${root}/board.canvas`);
 
-	check('fenced dataviewjs is off', note.includes('```dataviewjs-off'));
-	check('inline $= is off', note.includes('`off:$= app.vault'));
-	check('dynamic Templater is off', note.includes('<%off:+'));
-	check('iframe source is parked', note.includes('data-off-src="https://embed.example.com/x"'));
-	check('the code is still there, unchanged', note.includes('app.vault.adapter.write("pwn.md", "owned")'));
-	check('plain Templater command survives untouched', note.includes('<% tp.file.title %>'));
-	check('inline DQL survives untouched', note.includes('`= this.file.name`'));
+	// Nothing is rewritten on the way in any more, so the strongest thing to
+	// assert is that the note is byte-for-byte what the author wrote.
+	check('the note arrives exactly as published', note === NOTE, '-> it was rewritten');
+	check('the canvas arrives exactly as published', canvas === CANVAS, '-> it was rewritten');
+	check('the DQL query survives', note.includes('```dataview\n'));
+	check('inline DQL survives', note.includes('`= this.file.name`'));
+	check('the mermaid diagram survives', note.includes('```mermaid'));
+	check('the fenced example about dataviewjs survives', note.includes('dv.list([])'));
 	check('the remote image is left as it is', note.includes('![](https://tracker.example.com/p.png)'));
-	check('the canvas node is off', canvas.includes('dataviewjs-off'));
 	check('nothing was written outside the package folder', [...vault.files.keys()].every((p) => p.startsWith(root + '/')), `-> ${JSON.stringify([...vault.files.keys()])}`);
 
 	console.log('\n=== 7. update over the install ===');
@@ -171,12 +188,13 @@ async function run() {
 	await applyUpdate(appI, archive, update);
 	check('an identical update rewrites nothing', vault.text(`${root}/note.md`) === note);
 
-	// The reader enables a block; the next update must not read that as their edit.
-	const armedNote = note.replace('```dataviewjs-off', '```dataviewjs');
-	vault.files.set(`${root}/note.md`, { path: `${root}/note.md`, data: enc.encode(armedNote), stat: { mtime: 9000 } });
+	// Obsidian stamps `metadata` into any canvas it opens. Merely looking at
+	// one must not count as an edit, or the next update trashes it.
+	const opened = JSON.stringify({ ...JSON.parse(canvas), metadata: { version: '1.0' } });
+	vault.files.set(`${root}/board.canvas`, { path: `${root}/board.canvas`, data: enc.encode(opened), stat: { mtime: 9000 } });
 	const update2 = await planUpdate(appI, archive, root, 5000);
-	const noteStatus = update2.writes.find((w) => w.path === 'note.md')?.status;
-	check('a block the reader switched on is not read as an edit', noteStatus === 'identical', `-> ${noteStatus}`);
+	const canvasStatus = update2.writes.find((w) => w.path === 'board.canvas')?.status;
+	check('a canvas the reader merely opened is not read as an edit', canvasStatus === 'identical', `-> ${canvasStatus}`);
 
 	console.log('\n=== 8. cleanup ===');
 	await deletePackage(settings, pkg.id);

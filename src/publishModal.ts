@@ -5,9 +5,9 @@ import { publishFolder } from './api/publishApi';
 import { fetchPackages, fetchTags, MAX_IDS_PER_QUERY, type Package } from './api/packagesApi';
 import { UnauthorizedError } from './api/api';
 import { extensionOf, hasExif } from './verify';
-import type { Capability } from './policy/types';
+import { isScannable, problemsIn } from './nocode';
 import { formatBytes } from './installs';
-import { describeCapabilities, renderConfirmRow } from './review';
+import { renderConfirmRow } from './ui';
 
 type FieldKey = 'title' | 'description';
 
@@ -44,6 +44,11 @@ function keepKnownTags(tags: string[], vocabulary: string[]): string[] {
 }
 
 /** Checks config and the folder, and only opens the form if publishing could actually succeed. */
+/** The formats hasExif() understands. */
+function isPhoto(path: string): boolean {
+	return extensionOf(path) === 'jpg' || extensionOf(path) === 'jpeg';
+}
+
 export function openPublishModal(plugin: MarketplacePlugin, folder: TFolder): void {
 	// These checks run before collecting files: making the user fill out a
 	// form just to then say "log in" is the wrong order, and there's no
@@ -113,7 +118,7 @@ class PublishModal extends Modal {
 		const prefix = this.folder.isRoot() ? '' : this.folder.path + '/';
 		const nameProblems = findNameProblems(this.files, prefix);
 		const links = findBrokenLinks(this.app, this.files);
-		const withExif = await this.exifFiles();
+		const { withExif, codeProblems } = await this.inspectFiles();
 		const bytes = this.files.reduce((sum, file) => sum + file.stat.size, 0);
 		this.mine = await this.fetchOwnPackages();
 
@@ -147,6 +152,14 @@ class PublishModal extends Modal {
 			return;
 		}
 
+		// Also a hard block, and for the same reason: the server answers 422
+		// for any of these, so "publish anyway" would only move the failure to
+		// the upload. Named here so the author can fix it in one pass.
+		if (codeProblems.length > 0) {
+			this.renderCodeProblems(codeProblems);
+			return;
+		}
+
 		if (links.length === 0 && withExif.length === 0) {
 			this.renderForm();
 			return;
@@ -155,9 +168,8 @@ class PublishModal extends Modal {
 		if (withExif.length > 0) this.renderExifWarning(withExif);
 		if (links.length > 0) this.renderLinks(links);
 
-		// Nothing here blocks publishing. Broken links are the author's call,
-		// and executable content is allowed on purpose — the catalog describes
-		// it rather than refusing it.
+		// Nothing left here blocks publishing: broken links and camera metadata
+		// are the author's call to make.
 		renderConfirmRow(
 			this.bodyEl,
 			'Continue',
@@ -200,15 +212,37 @@ class PublishModal extends Modal {
 	 * Named rather than stripped — removing metadata would change the author's
 	 * files without being asked.
 	 */
-	private async exifFiles(): Promise<string[]> {
+	private async inspectFiles(): Promise<{ withExif: string[]; codeProblems: string[] }> {
 		const withExif: string[] = [];
+		const codeProblems: string[] = [];
 
-		for (const file of this.files) {
-			if (extensionOf(file.path) !== 'jpg' && extensionOf(file.path) !== 'jpeg') continue;
-			if (hasExif(new Uint8Array(await this.app.vault.readBinary(file)))) withExif.push(file.name);
-		}
+		// One pass, and the reads issued together rather than awaited one at a
+		// time: this runs before the review screen paints, and a folder of a
+		// couple of thousand notes made that wait visible.
+		const wanted = this.files.filter((file) => isScannable(file.path) || isPhoto(file.path));
+		const contents = await Promise.all(wanted.map((file) => this.app.vault.readBinary(file)));
 
-		return withExif;
+		wanted.forEach((file, index) => {
+			const data = new Uint8Array(contents[index] as ArrayBuffer);
+
+			if (isPhoto(file.path)) {
+				if (hasExif(data)) withExif.push(file.name);
+				return;
+			}
+
+			try {
+				codeProblems.push(...problemsIn(file.path, new TextDecoder().decode(data)));
+			} catch (error) {
+				// scanFile refuses a file it cannot read at all — a canvas that
+				// is not JSON, or one past the node cap. The server answers 422
+				// for the same file, so this belongs on the list. Left uncaught
+				// it rejected out of `void this.review()` and the modal sat on
+				// "Checking contents..." forever.
+				codeProblems.push(`${file.path} — ${error instanceof Error ? error.message : String(error)}`);
+			}
+		});
+
+		return { withExif, codeProblems };
 	}
 
 	private renderExifWarning(withExif: string[]): void {
@@ -219,6 +253,19 @@ class PublishModal extends Modal {
 			cls: 'marketplace-finding-path',
 			text: 'That can include the location the photo was taken and the camera serial number. Publishing makes it public.',
 		});
+	}
+
+	private renderCodeProblems(problems: string[]) {
+		this.bodyEl.createEl('h4', { text: `Content that runs by itself (${problems.length})` });
+		this.bodyEl.createDiv({
+			cls: 'marketplace-detail-desc',
+			text: 'Packages may only contain notes that do nothing on their own. Remove or fence off these fragments, then publish again.',
+		});
+		const list = this.bodyEl.createDiv({ cls: 'marketplace-findings' });
+		for (const problem of problems.slice(0, MAX_LISTED)) {
+			const row = list.createDiv({ cls: 'marketplace-finding marketplace-finding-danger' });
+			row.createDiv({ cls: 'marketplace-finding-path', text: problem });
+		}
 	}
 
 	private renderNameProblems(problems: string[]) {
@@ -377,7 +424,7 @@ class PublishModal extends Modal {
 		button.setButtonText('Publishing...');
 
 		try {
-			const capabilities: Capability[] = await publishFolder(
+			await publishFolder(
 				this.app,
 				this.folder,
 				this.files,
@@ -390,15 +437,7 @@ class PublishModal extends Modal {
 				this.targetId || undefined,
 			);
 
-			// What the catalog now says, in the server's own words. This used to
-			// be predicted here before uploading, which meant a second copy of
-			// the analyser in the plugin to produce the answer the response was
-			// about to carry anyway.
-			const done = this.targetId ? 'Update published' : 'Published';
-			new Notice(
-				capabilities.length === 0 ? `${done}. Listed as running no code.` : `${done}. Listed as: ${describeCapabilities(capabilities)}.`,
-				10_000,
-			);
+			new Notice(this.targetId ? 'Update published.' : 'Published.', 10_000);
 			this.close();
 		} catch (error) {
 			console.error(error);

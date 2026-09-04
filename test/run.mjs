@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const entryPoints = ['test/settings-render.ts', 'test/update-plan.ts', 'test/list-query.ts', 'test/install-record.ts', 'test/disarm.ts', 'test/still-armed.ts'];
+const entryPoints = ['test/settings-render.ts', 'test/update-plan.ts', 'test/list-query.ts', 'test/install-record.ts', 'test/nocode.ts'];
 let failed = false;
 
 for (const entryPoint of entryPoints) {

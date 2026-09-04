@@ -23,9 +23,7 @@ import {
 } from './installs';
 import { UnauthorizedError } from './api/api';
 import { armButton } from './ui';
-import { renderManifest, renderConfirmRow } from './review';
-import { readContext } from './context';
-import { POLICY_VERSION, type Finding } from './policy/types';
+import { renderConfirmRow } from './ui';
 
 const SORT_LABELS: Record<SortKey, string> = {
 	newest: 'Newest',
@@ -605,15 +603,13 @@ export class MarketplaceModal extends Modal {
 				return;
 			}
 
-			// The digest ties these bytes to the row the catalog described. Without
-			// it the manifest shown a moment ago could belong to another archive.
+			// The digest ties these bytes to the catalog row, so what gets
+			// unpacked is the archive the server checked and not another one.
 			const archive = await downloadPackageArchive(this.plugin.settings, pkg.id, pkg.sha256);
 			// Validation and writing are separate steps because a
 			// confirmation prompt can sit between them. No file exists in
 			// the vault until this point.
-			// The manifest goes in so the plan can say which of the fragments the
-			// server flagged as self-starting we actually managed to switch off.
-			const plan = await inspectArchive(archive, describedBy(pkg));
+			const plan = await inspectArchive(archive);
 
 			// An installed copy is updated in place; everything else is a
 			// fresh install into a new folder, exactly as before.
@@ -647,9 +643,9 @@ export class MarketplaceModal extends Modal {
 	 * Asks for confirmation before someone else's active content lands in
 	 * the vault.
 	 *
-	 * A package is notes that are about to be opened, and a ```dataviewjs
-	 * block or Templater command runs with the app's full permissions. The
-	 * user needs to see this before the write happens, not after.
+	 * The server refuses anything executable, so this screen is about the
+	 * write itself: how much lands where, and which of the reader's own note
+	 * names it is about to shadow.
 	 */
 	private confirmInstall(pkg: Package, archive: ArrayBuffer, plan: PackagePlan, button: ButtonComponent) {
 		this.clearBody();
@@ -672,130 +668,13 @@ export class MarketplaceModal extends Modal {
 			});
 		}
 
-		const findings = describedBy(pkg);
-		renderManifest(this.bodyEl, findings, readContext(this.app));
-
-		// Not a warning to click past: it says what will actually happen — and it
-		// is now checked rather than asserted, because a sentence like this one
-		// stops being reassurance and becomes a lie the moment the package holds
-		// something disarm() does not know about.
-		if (plan.stillArmed.length > 0) {
-			this.renderStillArmed(plan);
-		} else if (findings.some((found) => found.trigger === 'render')) {
-			this.bodyEl.createDiv({
-				cls: 'marketplace-detail-desc',
-				text:
-					'Anything that would run on its own is installed switched off. The code stays in the notes, ' +
-					'and each block has a button to turn it on once you have read it.',
-			});
-		}
-
-		if (pkg.policyVersion === 0) {
-			// "Not described" must never look like "nothing to report".
-			this.bodyEl.createDiv({
-				cls: 'marketplace-detail-desc',
-				text: 'The server has not described this package, so nothing above is a complete picture.',
-			});
-		} else if (pkg.policyVersion > POLICY_VERSION) {
-			// Plugins update on their own schedule, so running behind the
-			// server is normal — but then this plugin switches off fewer kinds
-			// of block than the description above accounts for, and only it
-			// knows that.
-			this.bodyEl.createDiv({
-				cls: 'marketplace-detail-desc',
-				text:
-					'This package was described by a newer version of the checker than your plugin has. ' +
-					'Update the plugin before installing — some of the above may not be switched off correctly.',
-			});
-		}
-
 		renderConfirmRow(
 			this.bodyEl,
 			'Install',
 			() => void this.write(pkg, archive, plan, button),
 			() => void this.showDetail(pkg),
-			findings.length > 0,
+			shadowed.length > 0,
 		);
-	}
-
-	/**
-	 * Asks before writing over an installed package.
-	 *
-	 * Unlike the install prompt, this one is unconditional: even a clean
-	 * archive overwrites files the user may have edited, so the question is
-	 * about the write plan, not only about active content.
-	 */
-	/**
-	 * Files the server called self-starting that we did not switch off.
-	 *
-	 * Named individually: "some of this could not be switched off" with no path
-	 * is an alarm nobody can act on, and the reader can open the archive listing
-	 * above to see what those files are.
-	 */
-	private renderStillArmed(plan: PackagePlan) {
-		const row = this.bodyEl.createDiv({ cls: 'marketplace-finding marketplace-finding-danger' });
-		row.createDiv({
-			cls: 'marketplace-finding-label',
-			text: `${plan.stillArmed.length} ${plan.stillArmed.length === 1 ? 'file' : 'files'} could NOT be switched off`,
-		});
-		row.createDiv({ cls: 'marketplace-finding-path', text: plan.stillArmed.slice(0, 10).join(', ') });
-		row.createDiv({
-			cls: 'marketplace-finding-path',
-			text: 'Code in those runs as soon as you open them. Install only if you trust the author.',
-		});
-	}
-
-	private confirmUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, plan: PackagePlan, button: ButtonComponent) {
-		const modified = update.writes.filter((write) => write.status === 'modified');
-		const count = (status: string) => update.writes.filter((write) => write.status === status).length;
-
-		this.clearBody();
-		this.bodyEl.createEl('h3', { text: `Update: ${pkg.title}` });
-		this.bodyEl.createDiv({
-			cls: 'marketplace-detail-desc',
-			text:
-				`Writing into ${update.root}: ${count('new')} new, ${count('changed')} replaced, ` +
-				`${modified.length} of your own edits, ${count('identical')} unchanged. ` +
-				'Files that are not part of the package are left alone.',
-		});
-
-		if (modified.length > 0) {
-			this.bodyEl.createEl('h4', { text: `Edited since you installed (${modified.length})` });
-			const list = this.bodyEl.createDiv({ cls: 'marketplace-findings' });
-			for (const write of modified) {
-				const row = list.createDiv({ cls: 'marketplace-finding marketplace-finding-warning' });
-				row.createDiv({ cls: 'marketplace-finding-label', text: 'Moved to trash, then replaced' });
-				row.createDiv({ cls: 'marketplace-finding-path', text: write.path });
-			}
-		}
-
-		this.renderNewCapabilities(pkg);
-		if (plan.stillArmed.length > 0) this.renderStillArmed(plan);
-		renderManifest(this.bodyEl, describedBy(pkg), readContext(this.app));
-
-		renderConfirmRow(
-			this.bodyEl,
-			'Update',
-			() => void this.writeUpdate(pkg, archive, update, button),
-			() => void this.showDetail(pkg),
-		);
-	}
-
-	/**
-	 * What this version asks for that the last one did not.
-	 *
-	 * A package can be harmless in version 1 and not in version 2. Showing the
-	 * whole manifest again says nothing about that — the reader already agreed
-	 * to it once. The difference is the only part that is new information.
-	 */
-	private renderNewCapabilities(pkg: Package) {
-		const accepted = this.plugin.settings.installs[pkg.id]?.capabilities ?? [];
-		const added = pkg.capabilities.filter((capability) => !accepted.includes(capability));
-		if (added.length === 0) return;
-
-		const row = this.bodyEl.createDiv({ cls: 'marketplace-finding marketplace-finding-danger' });
-		row.createDiv({ cls: 'marketplace-finding-label', text: 'This version asks for more than the one you installed' });
-		row.createDiv({ cls: 'marketplace-finding-path', text: added.join(', ') });
 	}
 
 	private async writeUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, button: ButtonComponent) {
@@ -833,10 +712,44 @@ export class MarketplaceModal extends Modal {
 	// --- install records ---
 
 	/**
-	 * Records where a package landed. The timestamp is taken here, AFTER the
-	 * writes: createBinary() sets mtime to now, so one captured earlier would
-	 * make the next update read every file we just wrote as a user edit.
+	 * Asks before writing over an installed package.
+	 *
+	 * Unlike the install prompt, this one is unconditional: even a clean
+	 * archive overwrites files the user may have edited, so the question is
+	 * about the write plan, not only about active content.
 	 */
+	private confirmUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, plan: PackagePlan, button: ButtonComponent) {
+		const modified = update.writes.filter((write) => write.status === 'modified');
+		const count = (status: string) => update.writes.filter((write) => write.status === status).length;
+
+		this.clearBody();
+		this.bodyEl.createEl('h3', { text: `Update: ${pkg.title}` });
+		this.bodyEl.createDiv({
+			cls: 'marketplace-detail-desc',
+			text:
+				`Writing into ${update.root}: ${count('new')} new, ${count('changed')} replaced, ` +
+				`${modified.length} of your own edits, ${count('identical')} unchanged. ` +
+				'Files that are not part of the package are left alone.',
+		});
+
+		if (modified.length > 0) {
+			this.bodyEl.createEl('h4', { text: `Edited since you installed (${modified.length})` });
+			const list = this.bodyEl.createDiv({ cls: 'marketplace-findings' });
+			for (const write of modified) {
+				const row = list.createDiv({ cls: 'marketplace-finding marketplace-finding-warning' });
+				row.createDiv({ cls: 'marketplace-finding-label', text: 'Moved to trash, then replaced' });
+				row.createDiv({ cls: 'marketplace-finding-path', text: write.path });
+			}
+		}
+
+		renderConfirmRow(
+			this.bodyEl,
+			'Update',
+			() => void this.writeUpdate(pkg, archive, update, button),
+			() => void this.showDetail(pkg),
+		);
+	}
+
 	private rememberInstall(pkg: Package, path: string) {
 		this.plugin.settings.installs[pkg.id] = {
 			path,
@@ -845,7 +758,6 @@ export class MarketplaceModal extends Modal {
 			// Cached so the Downloaded tab can draw this card without the network.
 			title: pkg.title,
 			author: pkg.author,
-			capabilities: pkg.capabilities,
 			authorId: pkg.authorId,
 		};
 	}
@@ -922,10 +834,7 @@ function recordAsPackage(id: string, record: InstallRecord): Package {
 		version: record.version,
 		updatedAt: '',
 		structure: [],
-		capabilities: record.capabilities ?? [],
-		manifest: null,
 		sha256: '',
-		policyVersion: 0,
 		revoked: false,
 	};
 }
@@ -1003,14 +912,3 @@ function formatDate(iso: string): string {
 	return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('en-US');
 }
 
-/**
- * What the catalog says this package does.
- *
- * The server worked this out from the archive it received, and sha256 was
- * checked against these exact bytes before anything was unpacked — so
- * recomputing it here would run the same code over the same input for the same
- * answer. That second copy cost 118 kB of JavaScript parser in the plugin.
- */
-function describedBy(pkg: Package): Finding[] {
-	return pkg.manifest?.findings ?? [];
-}

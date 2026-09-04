@@ -4,7 +4,6 @@ import { apiRequest } from './api';
 import { MAX_PUBLISH_BYTES } from '../constants';
 import { formatBytes } from '../installs';
 import type { MarketplaceSettings } from '../settings';
-import type { Capability } from '../policy/types';
 
 export interface PublishMetadata {
 	title: string;
@@ -29,7 +28,7 @@ export async function publishFolder(
 	metadata: PublishMetadata,
 	settings: MarketplaceSettings,
 	packageId?: string,
-): Promise<Capability[]> {
+): Promise<void> {
 	// the vault root's path is "/", so there's no prefix to strip in that case
 	const prefix = folder.isRoot() ? '' : folder.path + '/';
 
@@ -76,7 +75,7 @@ async function upload(
 	metadata: PublishMetadata,
 	settings: MarketplaceSettings,
 	packageId?: string,
-): Promise<Capability[]> {
+): Promise<void> {
 	const boundary = randomBoundary();
 	const body = buildMultipartBody(
 		boundary,
@@ -95,7 +94,7 @@ async function upload(
 	// The token goes in a header, never a form field: field values land in
 	// the multipart body unquoted and unescaped, so a secret has no
 	// business being there.
-	const response = await apiRequest(settings, {
+	await apiRequest(settings, {
 		path: '/publish',
 		method: 'POST',
 		contentType: `multipart/form-data; boundary=${boundary}`,
@@ -103,9 +102,6 @@ async function upload(
 		auth: true,
 	});
 
-	const capabilities = (response.json as { capabilities?: unknown })?.capabilities;
-
-	return Array.isArray(capabilities) ? (capabilities.filter((entry) => typeof entry === 'string') as Capability[]) : [];
 }
 
 /**

@@ -13,8 +13,6 @@ import {
 } from './constants';
 import { readTarGz, assertSafeEntryName, type TarEntry } from './tar';
 import { assertContentMatchesExtension, extensionOf } from './verify';
-import { arm, armCanvas, disarm, disarmCanvas, disarmedCanvasLines, disarmedLines } from './disarm';
-import type { Capability, Finding } from './policy/types';
 
 /**
  * Characters not allowed in a folder name.
@@ -56,32 +54,12 @@ const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 /** How many numbered suffixes to try on a taken name before giving up. */
 const MAX_NAME_ATTEMPTS = 100;
 
-/**
- * Capabilities toWrite() is supposed to neutralise.
- *
- * Everything else the manifest reports on a 'render' trigger — a remote image,
- * a DQL query — is deliberately left running, so counting those would turn the
- * check below into noise nobody reads.
- */
-const DISARMED_CAPABILITIES: Capability[] = ['js', 'remote-embed'];
-
 /** A validated archive, ready to be written. */
 export interface PackagePlan {
 	/** Paths relative to the package folder, e.g. "images/diagram.png". */
 	paths: string[];
 	/** Unpacked size of the whole package. */
 	totalBytes: number;
-	/**
-	 * Files the server says start on their own that we did NOT switch off.
-	 *
-	 * The install screen used to state flatly that anything self-starting is
-	 * installed switched off. Nothing checked whether that was true for the
-	 * package in hand, so a construct disarm() did not know about — a canvas, a
-	 * fence language it skipped — shipped live under a reassuring sentence. The
-	 * manifest is an independent witness here: it is computed by the server from
-	 * the same bytes, by code that is not the code being checked.
-	 */
-	stillArmed: string[];
 }
 
 /**
@@ -92,9 +70,10 @@ export interface PackagePlan {
  * MAX_UNCOMPRESSED_BYTES the whole time — so every later step re-reads the
  * archive instead, which costs one gzip pass and no memory.
  *
- * What this does NOT do is describe the package again. The server already did
- * that on these exact bytes — sha256 was checked before this was called — with
- * the same code, so a second pass could only ever agree with itself.
+ * What this does NOT do is check the content again. The server refuses
+ * anything that runs before it ever reaches the catalog, and sha256 was
+ * verified before this was called, so a second pass over the same bytes with
+ * the same code could only agree with itself.
  *
  * What stays is the path checking, and it stays for a different reason than
  * distrust of the server: it is the last thing between an archive and
@@ -102,7 +81,7 @@ export interface PackagePlan {
  * prevents is writing outside the vault, so it is worth keeping whoever else
  * has already looked.
  */
-export async function inspectArchive(archive: ArrayBuffer, findings: Finding[] = []): Promise<PackagePlan> {
+export async function inspectArchive(archive: ArrayBuffer): Promise<PackagePlan> {
 	if (archive.byteLength === 0) throw new Error('The downloaded file is empty');
 	if (archive.byteLength > MAX_ARCHIVE_BYTES) {
 		throw new Error(
@@ -112,16 +91,6 @@ export async function inspectArchive(archive: ArrayBuffer, findings: Finding[] =
 
 	const paths: string[] = [];
 	const seen = new Set<string>();
-	const stillArmed: string[] = [];
-	// Keyed by path AND line, because the answer is per fragment: see
-	// allNeutralised().
-	const selfStarting = new Map<string, number[]>();
-	for (const found of findings) {
-		if (found.trigger !== 'render') continue;
-		if (!found.capabilities.some((c) => DISARMED_CAPABILITIES.includes(c))) continue;
-
-		selfStarting.set(found.path, [...(selfStarting.get(found.path) ?? []), found.line]);
-	}
 	let totalBytes = 0;
 
 	await eachEntryAsync(archive, async (entry) => {
@@ -135,16 +104,13 @@ export async function inspectArchive(archive: ArrayBuffer, findings: Finding[] =
 
 		assertContentMatchesExtension(path, entry.data);
 
-		const flagged = selfStarting.get(entry.name);
-		if (flagged !== undefined && !allNeutralised(entry, flagged)) stillArmed.push(path);
-
 		paths.push(path);
 		totalBytes += entry.data.length;
 	});
 
 	if (paths.length === 0) throw new Error('The archive contains no files');
 
-	return { paths, totalBytes, stillArmed };
+	return { paths, totalBytes };
 }
 
 /**
@@ -164,7 +130,7 @@ export async function installPlan(
 		await eachEntryAsync(archive, async (entry) => {
 			const path = `${root}/${safeRelativePath(entry.name)}`;
 			await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
-			await app.vault.createBinary(path, toWrite(entry).buffer as ArrayBuffer);
+			await app.vault.createBinary(path, entry.data.buffer as ArrayBuffer);
 		});
 	} catch (error) {
 		// A half-written package is worse than no package.
@@ -256,14 +222,14 @@ export async function applyUpdate(app: App, archive: ArrayBuffer, update: Update
 
 	await eachEntryAsync(archive, async (entry) => {
 		const write = planned.get(safeRelativePath(entry.name));
-		// Already byte-identical, or switched on by the reader — writing it
-		// would only churn mtime and undo their choice.
+		// Already byte-identical — writing it would only churn mtime, which the
+		// next update would then read as a local edit.
 		if (write === undefined || write.status === 'identical') return;
 
 		const path = `${update.root}/${write.path}`;
 		await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
 
-		const data = toWrite(entry).buffer as ArrayBuffer;
+		const data = entry.data.buffer as ArrayBuffer;
 
 		if (write.existing === null) {
 			await app.vault.createBinary(path, data);
@@ -282,72 +248,17 @@ export async function applyUpdate(app: App, archive: ArrayBuffer, update: Update
 	});
 }
 
-/**
- * What a file becomes on disk.
- *
- * Notes are written switched off: anything that would run the moment the note
- * is opened is suffixed so no interpreter matches it. The code stays in the
- * file, visible and unchanged, and the reader switches it on when they choose.
- */
-function toWrite(entry: TarEntry): Uint8Array {
-	const extension = extensionOf(entry.name);
-	// A canvas renders its text nodes exactly like a note, so it needs the same
-	// treatment — through its own JSON, which plain disarm() cannot see into.
-	if (extension !== 'md' && extension !== 'canvas') return entry.data;
-
-	const text = new TextDecoder().decode(entry.data);
-	const off = extension === 'canvas' ? disarmCanvas(text) : disarm(text);
-
-	return off === text ? entry.data : new TextEncoder().encode(off);
-}
-
-/**
- * Whether every fragment the server flagged on this file was switched off.
- *
- * Per finding, not per file. The old test asked only whether toWrite() had
- * changed anything at all, so one construct disarm() understands vouched for
- * every other one beside it: a canvas link card, or a ```jsx: fence next to a
- * ```dataviewjs one, shipped live under the sentence promising the opposite.
- *
- * Findings are matched by line, which is all the manifest carries. Markdown
- * nested inside an admonition is numbered relative to its own block, so a
- * fragment there can in principle share a number with one outside it; that is a
- * narrower miss than the whole-file answer it replaces.
- */
-function allNeutralised(entry: TarEntry, flagged: number[]): boolean {
-	const extension = extensionOf(entry.name);
-	// Everything else toWrite() copies through untouched, so nothing was.
-	if (extension !== 'md' && extension !== 'canvas') return false;
-
-	const text = new TextDecoder().decode(entry.data);
-
-	if (extension === 'canvas') {
-		const { lines, undisarmable } = disarmedCanvasLines(text);
-		return !undisarmable && flagged.every((line) => lines.has(line));
-	}
-
-	const lines = disarmedLines(text);
-
-	return flagged.every((line) => lines.has(line));
-}
-
-/**
- * How an installed file compares to the archive.
- *
- * For notes the comparison is made with everything switched back on, so a
- * block the reader chose to enable does not read as an accidental edit — which
- * would otherwise send their file to the trash on the next update.
- */
+/** How an installed file compares to the archive. */
 function compare(path: string, current: ArrayBuffer, entry: TarEntry, touched: boolean): FileStatus {
-	const wanted = toWrite(entry);
+	const wanted = entry.data;
 	if (sameBytes(current, wanted)) return 'identical';
 
-	const extension = extensionOf(path);
-	if (extension === 'md' || extension === 'canvas') {
+	// A canvas is compared through canvasKey() rather than byte for byte:
+	// Obsidian rewrites one just for being opened, and that is not an edit.
+	if (extensionOf(path) === 'canvas') {
 		const decoder = new TextDecoder();
 		try {
-			const armed = extension === 'canvas' ? canvasKey : arm;
-			if (armed(decoder.decode(current)) === armed(decoder.decode(wanted))) return 'identical';
+			if (canvasKey(decoder.decode(current)) === canvasKey(decoder.decode(wanted))) return 'identical';
 		} catch {
 			/* not decodable as text — fall through to the byte answer */
 		}
@@ -361,16 +272,15 @@ function compare(path: string, current: ArrayBuffer, entry: TarEntry, touched: b
 /**
  * A canvas reduced to what an edit would actually change.
  *
- * Switched back on, so a block the reader enabled is not read as an edit, and
- * re-serialised, so Obsidian's own rewriting of the file's indentation is not
- * either. Its `metadata` stamp goes too: Obsidian writes one into every canvas
+ * Re-serialised, so Obsidian's own rewriting of the file's indentation does not
+ * read as an edit. Its `metadata` stamp goes too: Obsidian writes one into every canvas
  * it opens, so without this, merely looking at a canvas made the next update
  * call it a local edit and trash it. Frontmatter the author actually wrote is
  * kept, and node positions still differ when the reader moved something.
  */
 function canvasKey(text: string): string {
 	try {
-		const canvas = JSON.parse(armCanvas(text)) as {
+		const canvas = JSON.parse(text) as {
 			metadata?: { version?: unknown; frontmatter?: Record<string, unknown> };
 		};
 

@@ -5,7 +5,6 @@ import { assertSafeApiUrl, TOKEN_RE, UnauthorizedError } from './api/api';
 import { API_BASE_URL } from './constants';
 import { closeAccount, fetchMe, revokeToken } from './api/accountApi';
 import { armButton } from './ui';
-import type { Capability } from './policy/types';
 
 /** What a downloaded package left in the vault, so an update knows where to write. */
 export interface InstallRecord {
@@ -26,14 +25,6 @@ export interface InstallRecord {
 	 */
 	title: string;
 	author: string;
-	/**
-	 * The capability set the reader accepted when they installed this.
-	 *
-	 * An update re-asks only when this grows. Showing the whole manifest again
-	 * says nothing new — they already agreed to it — while a version that
-	 * quietly adds network access is exactly what needs to stop them.
-	 */
-	capabilities: Capability[];
 	/**
 	 * Owner at install time. A package changing hands between versions is not
 	 * an update, and an update is not the moment to find that out silently.

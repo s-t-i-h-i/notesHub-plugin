@@ -1,6 +1,5 @@
 import { apiRequest } from './api';
 import type { MarketplaceSettings } from '../settings';
-import type { Capability, Manifest } from '../policy/types';
 
 /** A package in the shape the UI expects — fields always exist and have the right type. */
 export interface Package {
@@ -19,24 +18,8 @@ export interface Package {
 	updatedAt: string;
 	/** Relative file paths in the archive. Empty in list results — fetchPackage() fills this in. */
 	structure: string[];
-	/**
-	 * What the package does, worked out by the server from the archive itself.
-	 * Carried by the listing so the reader sees it BEFORE downloading.
-	 */
-	capabilities: Capability[];
-	/**
-	 * The evidence behind those capabilities. Only fetchPackage() fills this in —
-	 * a catalog page has no business shipping every finding of twenty packages.
-	 */
-	manifest: Manifest | null;
 	/** SHA-256 of the archive, hex. Empty when the server did not send one. */
 	sha256: string;
-	/**
-	 * Which analyser version described this package. 0 means it was never
-	 * described — which is not the same as "nothing to report", and the UI has
-	 * to say so rather than imply a clean result.
-	 */
-	policyVersion: number;
 	/** The server has since marked this package as malicious. */
 	revoked: boolean;
 }
@@ -56,10 +39,9 @@ export async function downloadPackageArchive(
 		throw new Error('The downloaded file is empty');
 	}
 
-	// Without this the manifest is a promise with nothing behind it: the
-	// catalog would describe one archive while these bytes were another.
-	// Skipped only when the server sent no digest at all, which an up-to-date
-	// worker never does.
+	// The catalog row and these bytes have to be the same package. Skipped
+	// only when the server sent no digest at all, which an up-to-date worker
+	// never does.
 	if (expected) {
 		const actual = await sha256Hex(response.arrayBuffer);
 		if (actual !== expected.toLowerCase()) {
@@ -199,49 +181,9 @@ function toPackage(raw: unknown): Package {
 		version: Number(row.version) || 1,
 		updatedAt: asText(row.updated_at),
 		structure: toStructure(row.structure),
-		capabilities: toCapabilities(row.capabilities),
-		manifest: toManifest(row.manifest),
 		sha256: asText(row.sha256),
-		// 0 for a row the server never described. The UI must not read that as
-		// "nothing to report".
-		policyVersion: Number(row.policy_version) || 0,
 		revoked: Number(row.revoked) === 1,
 	};
-}
-
-/** `capabilities` arrives as a JSON array of strings. */
-function toCapabilities(value: unknown): Capability[] {
-	const parsed = parseJson(value);
-
-	return Array.isArray(parsed) ? (parsed.filter((entry) => typeof entry === 'string') as Capability[]) : [];
-}
-
-/**
- * The full manifest, or null when there isn't one.
- *
- * null and "an empty manifest" have to stay distinguishable: one means nobody
- * looked, the other means someone looked and found nothing.
- */
-function toManifest(value: unknown): Manifest | null {
-	const parsed = parseJson(value);
-	if (parsed === null || typeof parsed !== 'object') return null;
-
-	const record = parsed as Partial<Manifest>;
-	if (!Array.isArray(record.findings)) return null;
-
-	return { version: Number(record.version) || 0, findings: record.findings };
-}
-
-function parseJson(value: unknown): unknown {
-	if (typeof value !== 'string' || !value) return null;
-
-	try {
-		return JSON.parse(value);
-	} catch {
-		// Malformed JSON means no description to show — not a reason to fail
-		// the whole listing.
-		return null;
-	}
 }
 
 /** `structure` arrives as a JSON array of paths, serialized as text. */

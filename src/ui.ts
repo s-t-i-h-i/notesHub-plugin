@@ -1,4 +1,4 @@
-import { ButtonComponent } from 'obsidian';
+import { ButtonComponent, Setting } from 'obsidian';
 
 /**
  * Two-step confirmation for irreversible actions.
@@ -37,4 +37,22 @@ export function armButton(
 			if (button.buttonEl.isConnected) disarm();
 		}, 4000);
 	});
+}
+
+/** A confirm/cancel button pair in one row. */
+export function renderConfirmRow(
+	parent: HTMLElement,
+	confirmLabel: string,
+	onConfirm: () => void,
+	onCancel: () => void,
+	warn = true,
+): void {
+	new Setting(parent)
+		.addButton((button) => {
+			button.setButtonText(confirmLabel).onClick(onConfirm);
+			// A risky action doesn't get the call-to-action style — that
+			// emphasis belongs to backing out, not going through with it.
+			if (warn) button.setWarning();
+		})
+		.addButton((button) => button.setButtonText('Cancel').setCta().onClick(onCancel));
 }

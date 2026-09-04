@@ -1,9 +1,10 @@
 /**
- * Keeps the shared analysis identical in both repos.
+ * Keeps the shared checks identical in both repos.
  *
- * The worker and the plugin run the same code on the same bytes, and the whole
- * point of the manifest is that the two agree. Two checkouts, no monorepo, so
- * the files are copied and this is what stops them drifting.
+ * The worker refuses an archive and the plugin warns about one before it is
+ * uploaded; both have to mean the same thing by "runs by itself". Two
+ * checkouts, no monorepo, so the files are copied and this is what stops them
+ * drifting.
  *
  * Two checks, because they catch different mistakes:
  *
@@ -28,10 +29,7 @@ const HASHES = 'scripts/policy-hashes.json';
 const SHARED = [
 	'src/tar.ts',
 	'src/verify.ts',
-	'src/policy/types.ts',
-	'src/policy/lex.ts',
-	'src/policy/html.ts',
-	'src/policy/interpreters.ts',
+	'src/nocode.ts',
 ];
 
 const mode = process.argv[2] === 'sync' ? 'sync' : 'check';
