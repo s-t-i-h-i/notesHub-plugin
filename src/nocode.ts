@@ -136,7 +136,9 @@ const PROSE: [RegExp, Hit['kind']][] = [
 	[/`\s*\$=/, 'dataview-inline'],
 	[new RegExp(`<code\\b${ATTRS}>\\s*\\$=`, 'i'), 'dataview-inline'],
 	[/<(script|iframe|object|embed)\b/i, 'html'],
-	[new RegExp(`<[a-z][a-z0-9-]*${ATTRS}\\son[a-z]+\\s*=`, 'i'), 'html-event'],
+	// `/` separates attributes just as whitespace does, so `<img/onerror=…>`
+	// fires the handler; requiring `\s` there let it through.
+	[new RegExp(`<[a-z][a-z0-9-]*${ATTRS}[\\s/]on[a-z]+\\s*=`, 'i'), 'html-event'],
 	// obsidian://advanced-uri runs an arbitrary command and javascript: runs
 	// arbitrary code — one click from execution, which is the same threat that
 	// keeps meta-bind-button out of INERT.

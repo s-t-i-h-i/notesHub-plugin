@@ -21,7 +21,7 @@ Notes Hub is a community-built collection of notes for Obsidian. If you spent ti
 - **Publish a folder as a package.** Right-click any folder and select **Publish** to package and upload it.
 - **Update packages cleanly.** Authors can publish new versions of existing packages. Downloaded packages can be updated in place while preserving untouched files and safely moving modified files to trash.
 - **Pre-publish checks.** Checks for broken links, unresolved targets, and camera EXIF metadata (GPS/serial numbers in JPGs) before uploading.
-- **Safe block execution (Disarmed by default).** Executable scripts (such as `dataviewjs`, Templater, and other dynamic blocks) arrive safely disabled so foreign code never runs without your consent. Inspect the code in reading view and enable it with one click.
+- **Nothing that runs.** Packages may only contain content that does nothing on its own. `dataviewjs`, Templater, `<script>`, click handlers and the rest are refused at publish time, with the offending `file:line`, so foreign code never reaches a vault.
 - **Vault isolation & conflict detection.** Downloaded packages are extracted into their own folder. The plugin warns you before install if note names overlap with existing notes in your vault.
 - **Browse, filter, and manage.** Modal with **Browse**, **My packages**, and **Downloaded** (offline) tabs, tag filtering, sorting, and folder structure previews.
 - **No email, no password.** Sign in with GitHub — only required if you want to publish packages. Downloading and browsing require no account.
@@ -59,23 +59,16 @@ Only Markdown files, canvases, and supported images inside the folder are includ
 1. Run the **Open marketplace** command from the command palette.
 2. Explore packages in **Browse**, filter by tag, or change sort order.
 3. Click any package card to view details, description, and the folder structure.
-4. Click **Download**, review the security manifest and shadowed note warnings, and click **Install**.
+4. Click **Download**, review the shadowed note warnings, and click **Install**.
 
 The package is extracted into your configured download folder (defaults to `marketplace-downloads/<package-title>`).
-
-### Running executable blocks safely
-
-When a package contains executable code blocks (like `dataviewjs` or Templater):
-- Blocks are installed in a disabled (`-off`) state with the code clearly visible in reading view.
-- Click **Enable this block** on any panel after reviewing its code to activate it.
-- Use the commands **Enable all blocks in this note** or **Disable all blocks in this note** to toggle all blocks in the active file.
 
 ### Update a downloaded package
 
 1. Open the marketplace (**Open marketplace** command) and go to **Browse** or the **Downloaded** tab.
 2. Packages with newer versions display an **Update available** badge.
 3. Open the package and click **Update (vX → vY)**.
-4. Review the write plan (new, replaced, unchanged files, or your own local edits moved to trash) and any newly requested capabilities.
+4. Review the write plan (new, replaced, unchanged files, or your own local edits moved to trash).
 5. Click **Update** to confirm.
 
 ### Update a published package
@@ -89,8 +82,6 @@ When a package contains executable code blocks (like `dataviewjs` or Templater):
 | Command | Description |
 |---|---|
 | `Open marketplace` | Open the Notes Hub marketplace to browse, download, and manage packages. |
-| `Enable all blocks in this note` | Turn on all disarmed executable blocks in the current note. |
-| `Disable all blocks in this note` | Turn off all executable blocks in the current note for safe review. |
 
 ## Settings
 
@@ -104,7 +95,7 @@ When a package contains executable code blocks (like `dataviewjs` or Templater):
 
 ## Security and privacy
 
-- **Safe execution by default:** Dynamic scripts and blocks arrive disarmed so untrusted code never executes automatically on install.
+- **Nothing executable ships:** the server scans every note and refuses to publish anything that runs by itself, so there is no untrusted code to execute on install.
 - **Server and client validation:** Files outside allowed extensions (Markdown, Canvas, common images) and malformed archive paths are rejected on both upload and download.
 - **Privacy protection:** Pre-publish scan checks for camera EXIF metadata in JPG photos (GPS locations, camera serials) and broken vault links before publishing.
 - **Vault safety:** Overwriting files during updates backs up locally modified files to the trash. Note name collisions across the vault are flagged before installation.

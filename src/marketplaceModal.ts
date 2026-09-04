@@ -629,7 +629,7 @@ export class MarketplaceModal extends Modal {
 					installed.folder.path,
 					installed.record.installedAt,
 				);
-				this.confirmUpdate(pkg, archive, update, plan, button);
+				this.confirmUpdate(pkg, archive, update, button);
 				return;
 			}
 
@@ -718,7 +718,7 @@ export class MarketplaceModal extends Modal {
 	 * archive overwrites files the user may have edited, so the question is
 	 * about the write plan, not only about active content.
 	 */
-	private confirmUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, plan: PackagePlan, button: ButtonComponent) {
+	private confirmUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, button: ButtonComponent) {
 		const modified = update.writes.filter((write) => write.status === 'modified');
 		const count = (status: string) => update.writes.filter((write) => write.status === status).length;
 

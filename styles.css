@@ -290,29 +290,6 @@
 }
 
 /* A switched-off code block: its own code, what it would do, and the button. */
-.marketplace-disarmed {
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
-	overflow: hidden;
-}
 
-.marketplace-disarmed pre {
-	margin: 0;
-	border-radius: 0;
-}
 
-.marketplace-disarmed-footer {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 0.75em;
-	flex-wrap: wrap;
-	padding: 0.5em 0.75em;
-	background-color: var(--background-secondary);
-	border-top: 1px solid var(--background-modifier-border);
-}
 
-.marketplace-disarmed-label {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-}

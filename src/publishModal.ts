@@ -43,12 +43,12 @@ function keepKnownTags(tags: string[], vocabulary: string[]): string[] {
 	return vocabulary.length === 0 ? [...tags] : tags.filter((tag) => vocabulary.includes(tag));
 }
 
-/** Checks config and the folder, and only opens the form if publishing could actually succeed. */
 /** The formats hasExif() understands. */
 function isPhoto(path: string): boolean {
 	return extensionOf(path) === 'jpg' || extensionOf(path) === 'jpeg';
 }
 
+/** Checks config and the folder, and only opens the form if publishing could actually succeed. */
 export function openPublishModal(plugin: MarketplacePlugin, folder: TFolder): void {
 	// These checks run before collecting files: making the user fill out a
 	// form just to then say "log in" is the wrong order, and there's no
@@ -261,11 +261,15 @@ class PublishModal extends Modal {
 			cls: 'marketplace-detail-desc',
 			text: 'Packages may only contain notes that do nothing on their own. Remove or fence off these fragments, then publish again.',
 		});
-		const list = this.bodyEl.createDiv({ cls: 'marketplace-findings' });
-		for (const problem of problems.slice(0, MAX_LISTED)) {
-			const row = list.createDiv({ cls: 'marketplace-finding marketplace-finding-danger' });
-			row.createDiv({ cls: 'marketplace-finding-path', text: problem });
-		}
+		this.renderTruncatedList(problems, (list, problem) =>
+			list
+				.createDiv({ cls: 'marketplace-finding marketplace-finding-danger' })
+				.createDiv({ cls: 'marketplace-finding-path', text: problem }),
+		);
+
+		new Setting(this.bodyEl).addButton((button) =>
+			button.setButtonText('Close').setCta().onClick(() => this.close()),
+		);
 	}
 
 	private renderNameProblems(problems: string[]) {
