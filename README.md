@@ -1,9 +1,9 @@
 # Obsidian Notes Hub
 
-Publish a folder from your vault as a package — notes, a guide, a template collection — and download packages shared by others. No servers to run, no accounts on a third-party platform, just a folder and a click.
+Publish a folder from your vault as a package — notes, a guide, a template collection — and download packages shared by others. No servers to run, just a folder and a click.
 
 
-> [!TIP] Early days
+> [!TIP] Early days - 
 > Notes Hub just launched, and it's still pretty empty — but your contributions will help it grow!
 >
 > Publish your notes and help build a community-driven hub of knowledge, together.
@@ -21,8 +21,7 @@ Notes Hub is a community-built collection of notes for Obsidian. If you spent ti
 - **Publish a folder as a package.** Right-click any folder and select **Publish** to package and upload it.
 - **Update packages cleanly.** Authors can publish new versions of existing packages. Downloaded packages can be updated in place while preserving untouched files and safely moving modified files to trash.
 - **Pre-publish checks.** Checks for broken links, unresolved targets, and camera EXIF metadata (GPS/serial numbers in JPGs) before uploading.
-- **Nothing that runs.** Packages may only contain content that does nothing on its own. `dataviewjs`, Templater, `<script>`, click handlers and the rest are refused at publish time, with the offending `file:line`, so foreign code never reaches a vault.
-- **Vault isolation & conflict detection.** Downloaded packages are extracted into their own folder. The plugin warns you before install if note names overlap with existing notes in your vault.
+- **Vault isolation & conflict detection.** Downloaded packages are extracted into their own folder. The plugin warns you before install if note names overlap with existing notes in your vault. The links in the package do not interfere with your vault.
 - **Browse, filter, and manage.** Modal with **Browse**, **My packages**, and **Downloaded** (offline) tabs, tag filtering, sorting, and folder structure previews.
 - **No email, no password.** Sign in with GitHub — only required if you want to publish packages. Downloading and browsing require no account.
 

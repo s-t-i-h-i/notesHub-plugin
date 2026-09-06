@@ -21,6 +21,7 @@ import {
 	type PackagePlan,
 	type UpdatePlan,
 } from './installs';
+import { tagSlug } from './links';
 import { UnauthorizedError } from './api/api';
 import { armButton } from './ui';
 import { renderConfirmRow } from './ui';
@@ -628,6 +629,9 @@ export class MarketplaceModal extends Modal {
 					archive,
 					installed.folder.path,
 					installed.record.installedAt,
+					plan.paths,
+					// Preserves the tagPrefix chosen during install for accurate comparison.
+					installed.record.tagPrefix,
 				);
 				this.confirmUpdate(pkg, archive, update, button);
 				return;
@@ -655,6 +659,16 @@ export class MarketplaceModal extends Modal {
 			text: `${plan.paths.length} ${plan.paths.length === 1 ? 'file' : 'files'}, ${formatBytes(plan.totalBytes)}.`,
 		});
 
+		// Optional setting to namespace tags under a slugified package title.
+		const slug = tagSlug(pkg.title);
+		let tagPrefix = '';
+		if (slug !== '') {
+			new Setting(this.bodyEl)
+				.setName(`Namespace this package's tags under "${slug}"`)
+				.setDesc(`#anki becomes #${slug}/anki. Fixed at install time — an update keeps whatever you choose here.`)
+				.addToggle((toggle) => toggle.onChange((value) => { tagPrefix = value ? slug : ''; }));
+		}
+
 		const shadowed = findShadowedNotes(this.app, plan.paths);
 		if (shadowed.length > 0) {
 			// Obsidian resolves [[Note]] by name across the whole vault, so
@@ -671,7 +685,7 @@ export class MarketplaceModal extends Modal {
 		renderConfirmRow(
 			this.bodyEl,
 			'Install',
-			() => void this.write(pkg, archive, plan, button),
+			() => void this.write(pkg, archive, plan, button, tagPrefix),
 			() => void this.showDetail(pkg),
 			shadowed.length > 0,
 		);
@@ -680,7 +694,7 @@ export class MarketplaceModal extends Modal {
 	private async writeUpdate(pkg: Package, archive: ArrayBuffer, update: UpdatePlan, button: ButtonComponent) {
 		try {
 			await applyUpdate(this.app, archive, update);
-			this.rememberInstall(pkg, update.root);
+			this.rememberInstall(pkg, update.root, update.tagPrefix);
 			await this.plugin.saveSettings();
 
 			new Notice(`Updated: ${update.root}`);
@@ -693,11 +707,18 @@ export class MarketplaceModal extends Modal {
 	}
 
 	/** Writes to the vault — the only place files actually get created. */
-	private async write(pkg: Package, archive: ArrayBuffer, plan: PackagePlan, button: ButtonComponent) {
+	private async write(pkg: Package, archive: ArrayBuffer, plan: PackagePlan, button: ButtonComponent, tagPrefix: string) {
 		try {
-			const folder = await installPlan(this.app, archive, pkg.title, this.plugin.settings.downloadFolder);
+			const folder = await installPlan(
+				this.app,
+				archive,
+				pkg.title,
+				this.plugin.settings.downloadFolder,
+				plan.paths,
+				tagPrefix,
+			);
 
-			this.rememberInstall(pkg, folder);
+			this.rememberInstall(pkg, folder, tagPrefix);
 			// Saved BEFORE the redraw: showDetail() reads the record to pick
 			// the button label and the "Installed at" line.
 			await this.plugin.saveSettings();
@@ -750,9 +771,11 @@ export class MarketplaceModal extends Modal {
 		);
 	}
 
-	private rememberInstall(pkg: Package, path: string) {
+	private rememberInstall(pkg: Package, path: string, tagPrefix: string) {
 		this.plugin.settings.installs[pkg.id] = {
 			path,
+			// Stored so updates apply the same tag namespace.
+			tagPrefix,
 			version: pkg.version,
 			installedAt: Date.now(),
 			// Cached so the Downloaded tab can draw this card without the network.

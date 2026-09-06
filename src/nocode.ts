@@ -98,7 +98,6 @@ const MAX_HITS_PER_FILE = 500;
 const MAX_CANVAS_NODES = 2000;
 
 /** Maximum nesting depth for objects/arrays inside a canvas node. */
-//! zrozumiec to
 const MAX_CANVAS_DEPTH = 8;
 
 /** Maximum number of problem locations reported in a single refusal message to the author. */
@@ -150,7 +149,6 @@ const INERT = new Set([
 // ============================================================================
 // 4. DETECTION PATTERNS (REGULAR EXPRESSIONS)
 // ============================================================================
-//! zrozumiec dokladniej
 
 /** Matches container prefixes: spaces/tabs and blockquote markers ('>'). */
 const CONTAINER = /^[ \t]*(?:>[ \t]*)*/;

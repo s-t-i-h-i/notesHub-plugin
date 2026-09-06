@@ -2,6 +2,7 @@ import { ButtonComponent, Modal, Notice, Setting, TFile, TFolder } from 'obsidia
 import MarketplacePlugin from './main';
 import { collectFiles, findBrokenLinks, findNameProblems, type BrokenLink } from './files';
 import { publishFolder } from './api/publishApi';
+import { normalize } from './links';
 import { fetchPackages, fetchTags, MAX_IDS_PER_QUERY, type Package } from './api/packagesApi';
 import { UnauthorizedError } from './api/api';
 import { extensionOf, hasExif } from './verify';
@@ -118,7 +119,7 @@ class PublishModal extends Modal {
 		const prefix = this.folder.isRoot() ? '' : this.folder.path + '/';
 		const nameProblems = findNameProblems(this.files, prefix);
 		const links = findBrokenLinks(this.app, this.files);
-		const { withExif, codeProblems } = await this.inspectFiles();
+		const { withExif, codeProblems, rewritten } = await this.inspectFiles();
 		const bytes = this.files.reduce((sum, file) => sum + file.stat.size, 0);
 		this.mine = await this.fetchOwnPackages();
 
@@ -143,6 +144,14 @@ class PublishModal extends Modal {
 			cls: 'marketplace-detail-desc',
 			text: `To be sent: ${this.files.length} files, ${formatBytes(bytes)}.`,
 		});
+
+		// Informs author if any internal links will be normalized for the package.
+		if (rewritten > 0) {
+			this.bodyEl.createDiv({
+				cls: 'marketplace-detail-desc',
+				text: `Links inside ${rewritten} ${rewritten === 1 ? 'file' : 'files'} will be sent as full package paths, so they keep working in the reader's vault.`,
+			});
+		}
 
 		// A hard block, not a warning: inspectArchive() rejects the whole
 		// archive for a name like this, so "publish anyway" would just move
@@ -212,9 +221,12 @@ class PublishModal extends Modal {
 	 * Named rather than stripped — removing metadata would change the author's
 	 * files without being asked.
 	 */
-	private async inspectFiles(): Promise<{ withExif: string[]; codeProblems: string[] }> {
+	private async inspectFiles(): Promise<{ withExif: string[]; codeProblems: string[]; rewritten: number }> {
 		const withExif: string[] = [];
 		const codeProblems: string[] = [];
+		const prefix = this.folder.isRoot() ? '' : this.folder.path + '/';
+		const inPackage = new Set(this.files.map((file) => file.path));
+		let rewritten = 0;
 
 		// One pass, and the reads issued together rather than awaited one at a
 		// time: this runs before the review screen paints, and a folder of a
@@ -230,6 +242,9 @@ class PublishModal extends Modal {
 				return;
 			}
 
+			// Count files that contain internal links needing normalization.
+			if (normalize(this.app, file, data, prefix, inPackage) !== data) rewritten++;
+
 			try {
 				codeProblems.push(...problemsIn(file.path, new TextDecoder().decode(data)));
 			} catch (error) {
@@ -242,7 +257,7 @@ class PublishModal extends Modal {
 			}
 		});
 
-		return { withExif, codeProblems };
+		return { withExif, codeProblems, rewritten };
 	}
 
 	private renderExifWarning(withExif: string[]): void {

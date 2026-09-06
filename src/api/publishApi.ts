@@ -1,5 +1,6 @@
 import { App, TFile, TFolder } from 'obsidian';
 import { writeTarGz } from '../tar';
+import { normalize } from '../links';
 import { apiRequest } from './api';
 import { MAX_PUBLISH_BYTES } from '../constants';
 import { formatBytes } from '../installs';
@@ -58,12 +59,17 @@ export async function publishFolder(
  * again in the local header, and nothing makes the two agree — so the worker
  * and the plugin's unpacker could read the same archive as two different sets
  * of files. Tar writes each name once.
+ *
+ * Normalizes internal links to be package-relative using the author's vault
+ * metadata cache. The author's vault files are not modified.
  */
 async function packFolder(app: App, files: TFile[], prefix: string): Promise<ArrayBuffer> {
 	const entries = [];
+	const inPackage = new Set(files.map((file) => file.path));
 
 	for (const file of files) {
-		entries.push({ name: file.path.slice(prefix.length), data: new Uint8Array(await app.vault.readBinary(file)) });
+		const data = new Uint8Array(await app.vault.readBinary(file));
+		entries.push({ name: file.path.slice(prefix.length), data: normalize(app, file, data, prefix, inPackage) });
 	}
 
 	return (await writeTarGz(entries)).buffer as ArrayBuffer;

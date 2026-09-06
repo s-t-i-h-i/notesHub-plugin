@@ -34,6 +34,8 @@ console.log('\n--- legacy records survive the new fields ---');
 	check('version preserved', installs.legacy?.version === 2);
 	check('title defaults to empty string', installs.legacy?.title === '');
 	check('author defaults to empty string', installs.legacy?.author === '');
+	// Defaults to empty string for legacy records created before tag namespacing.
+	check('tagPrefix defaults to empty string', installs.legacy?.tagPrefix === '');
 }
 
 console.log('\n--- a bad label must not cost the install path ---');

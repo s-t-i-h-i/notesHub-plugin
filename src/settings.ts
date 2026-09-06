@@ -30,6 +30,8 @@ export interface InstallRecord {
 	 * an update, and an update is not the moment to find that out silently.
 	 */
 	authorId: string;
+	/** Tag namespace prefix chosen at install time ('' if none). */
+	tagPrefix: string;
 }
 
 export interface MarketplaceSettings {

@@ -93,7 +93,11 @@ const ARMED: Record<string, string> = { 'Armed/note.md': '# Lesson\n\n```datavie
 function sourceApp(source: Record<string, string> = SOURCE, root = 'Course') {
 	const files = Object.keys(source).map((path) => Object.assign(new TFile(), { path, extension: path.split('.').pop(), name: path.split('/').pop() }));
 	const folder = Object.assign(new TFolder(), { path: root, isRoot: () => false });
-	const app: any = { vault: { readBinary: async (f: any) => enc.encode(source[f.path]).buffer } };
+	const app: any = {
+		vault: { readBinary: async (f: any) => enc.encode(source[f.path]).buffer },
+		// Empty cache mock since this fixture has no internal links.
+		metadataCache: { getFileCache: () => null, getFirstLinkpathDest: () => null },
+	};
 	return { app, folder, files };
 }
 
@@ -167,12 +171,11 @@ async function run() {
 	console.log('\n=== 6. what actually lands on disk ===');
 	const vault = new Vault();
 	const appI: any = { vault, fileManager: { trashFile: async (f: any) => vault.files.delete(f.path) } };
-	const root = await installPlan(appI, archive, 'E2E probe', 'dl');
+	const root = await installPlan(appI, archive, 'E2E probe', 'dl', plan.paths, '');
 	const note = vault.text(`${root}/note.md`);
 	const canvas = vault.text(`${root}/board.canvas`);
 
-	// Nothing is rewritten on the way in any more, so the strongest thing to
-	// assert is that the note is byte-for-byte what the author wrote.
+	// No internal links exist in this fixture, so the note arrives unchanged.
 	check('the note arrives exactly as published', note === NOTE, '-> it was rewritten');
 	check('the canvas arrives exactly as published', canvas === CANVAS, '-> it was rewritten');
 	check('the DQL query survives', note.includes('```dataview\n'));
@@ -183,7 +186,7 @@ async function run() {
 	check('nothing was written outside the package folder', [...vault.files.keys()].every((p) => p.startsWith(root + '/')), `-> ${JSON.stringify([...vault.files.keys()])}`);
 
 	console.log('\n=== 7. update over the install ===');
-	const update = await planUpdate(appI, archive, root, 5000);
+	const update = await planUpdate(appI, archive, root, 5000, plan.paths, '');
 	check('re-installing the same version is all identical', update.writes.every((w) => w.status === 'identical'), `-> ${JSON.stringify(update.writes.map((w) => w.status))}`);
 	await applyUpdate(appI, archive, update);
 	check('an identical update rewrites nothing', vault.text(`${root}/note.md`) === note);
@@ -192,7 +195,7 @@ async function run() {
 	// one must not count as an edit, or the next update trashes it.
 	const opened = JSON.stringify({ ...JSON.parse(canvas), metadata: { version: '1.0' } });
 	vault.files.set(`${root}/board.canvas`, { path: `${root}/board.canvas`, data: enc.encode(opened), stat: { mtime: 9000 } });
-	const update2 = await planUpdate(appI, archive, root, 5000);
+	const update2 = await planUpdate(appI, archive, root, 5000, plan.paths, '');
 	const canvasStatus = update2.writes.find((w) => w.path === 'board.canvas')?.status;
 	check('a canvas the reader merely opened is not read as an edit', canvasStatus === 'identical', `-> ${canvasStatus}`);
 

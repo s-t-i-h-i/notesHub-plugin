@@ -99,6 +99,8 @@ function readInstalls(value: unknown): Record<string, InstallRecord> {
 			title: typeof record.title === 'string' ? record.title : '',
 			author: typeof record.author === 'string' ? record.author : '',
 			authorId: typeof record.authorId === 'string' ? record.authorId : '',
+			// Tag namespace prefix chosen at install time.
+			tagPrefix: typeof record.tagPrefix === 'string' ? record.tagPrefix : '',
 		};
 	}
 

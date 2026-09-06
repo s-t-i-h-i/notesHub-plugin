@@ -29,7 +29,7 @@ class WelcomeModal extends Modal {
 
 		contentEl.createEl('h2', { text: 'Welcome to Notes hub!' });
 		contentEl.createEl('p', {
-			text: 'Thanks for installing! This plugin is still an early version, so expect some rough edges here and there.',
+			text: 'Thanks for installing! Please note that this is an early version, so you may encounter some initial stability issues.',
 		});
 		contentEl.createEl('p', {
 			text: "Once you've got a folder of notes, a template, or a course you're proud of, we'd love for you to publish it and share it with others.",
@@ -37,7 +37,7 @@ class WelcomeModal extends Modal {
 
 		new Setting(contentEl).addButton((button) =>
 			button
-				.setButtonText("Let's share!")
+				.setButtonText("Let's explore!")
 				.setCta()
 				.onClick(() => {
 					this.close();

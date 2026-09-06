@@ -18,6 +18,7 @@ function check(label: string, cond: boolean, extra = '') {
 }
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 const bytes = (text: string): ArrayBuffer => encoder.encode(text).buffer as ArrayBuffer;
 
 const ROOT = 'downloads/Package';
@@ -115,6 +116,9 @@ async function run() {
 			{ name: 'Board.canvas', data: encoder.encode(canvas()) },
 			{ name: 'Moved.canvas', data: encoder.encode(canvas()) },
 			{ name: 'Front.canvas', data: encoder.encode(canvas()) },
+			// Fixture notes to test link rewriting on update.
+			{ name: 'Linked.md', data: encoder.encode('see [[Same]]') },
+			{ name: 'Raw.md', data: encoder.encode('see [[Same]]') },
 		])
 	).buffer as ArrayBuffer;
 
@@ -135,6 +139,10 @@ async function run() {
 	vault.addFile(`${ROOT}/Moved.canvas`, canvas(STAMP, 500), INSTALLED_AT + 5_000);
 	// Frontmatter someone wrote is content, not bookkeeping.
 	vault.addFile(`${ROOT}/Front.canvas`, canvas({ metadata: { version: '1.0-1.0', frontmatter: { tags: ['mine'] } } }), INSTALLED_AT + 5_000);
+	// Installed with link rewriting: link already includes folder path.
+	vault.addFile(`${ROOT}/Linked.md`, `see [[${ROOT}/Same|Same]]`, INSTALLED_AT + 5_000);
+	// Legacy install: raw archive link without folder prefix.
+	vault.addFile(`${ROOT}/Raw.md`, 'see [[Same]]', INSTALLED_AT + 5_000);
 
 	const trashed: string[] = [];
 	const app: any = {
@@ -148,8 +156,8 @@ async function run() {
 		},
 	};
 
-	await inspectArchive(archive);
-	const update = await planUpdate(app, archive, ROOT, INSTALLED_AT);
+	const plan = await inspectArchive(archive);
+	const update = await planUpdate(app, archive, ROOT, INSTALLED_AT, plan.paths, '');
 
 	const status = (path: string) => update.writes.find((write) => write.path === path)?.status;
 
@@ -164,6 +172,10 @@ async function run() {
 	check('a canvas the reader only opened is not a local edit', status('Board.canvas') === 'identical', `-> ${status('Board.canvas')}`);
 	check('a canvas the reader really moved still is', status('Moved.canvas') === 'modified', `-> ${status('Moved.canvas')}`);
 	check('canvas frontmatter is content, not bookkeeping', status('Front.canvas') === 'modified', `-> ${status('Front.canvas')}`);
+	// Rewritten files match expected content, so they are not flagged as modified.
+	check('a rewritten link compares against the rewritten bytes', status('Linked.md') === 'identical', `-> ${status('Linked.md')}`);
+	// Legacy install matching raw archive bytes is updated rather than treated as a user edit.
+	check('an install from before link rewriting is overwritten, not trashed', status('Raw.md') === 'changed', `-> ${status('Raw.md')}`);
 
 	await applyUpdate(app, archive, update);
 
@@ -178,11 +190,13 @@ async function run() {
 	check('the case variant is modified, not created', vault.log.includes(`modify ${ROOT}/note.md`)
 		&& !vault.log.some((entry) => entry === `create ${ROOT}/Note.md`));
 	check('a note the user added is left alone', vault.files.has(`${ROOT}/Mine.md`) && !trashed.includes(`${ROOT}/Mine.md`));
+	check('the old install is rewritten with the full link', decoder.decode(vault.files.get(`${ROOT}/Raw.md`)?.data) === `see [[${ROOT}/Same|Same]]`, `-> ${decoder.decode(vault.files.get(`${ROOT}/Raw.md`)?.data)}`);
+	check('the already rewritten note is not touched', !vault.log.some((entry) => entry.includes('Linked.md')));
 
 	console.log('\n--- repeat is a no-op ---');
 	// A failed update must be safe to retry, and that only holds if a second
 	// run over an already-updated folder writes nothing at all.
-	const second = await planUpdate(app, archive, ROOT, Date.now());
+	const second = await planUpdate(app, archive, ROOT, Date.now(), plan.paths, '');
 	vault.log.length = 0;
 	await applyUpdate(app, archive, second);
 	check('re-running the same update writes nothing', vault.log.length === 0, `-> ${JSON.stringify(vault.log)}`);

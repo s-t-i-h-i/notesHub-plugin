@@ -12,15 +12,20 @@ import {
 	MAX_UNCOMPRESSED_BYTES,
 } from './constants';
 import { readTarGz, assertSafeEntryName, type TarEntry } from './tar';
+import { localizer } from './links';
 import { assertContentMatchesExtension, extensionOf } from './verify';
 
 /**
  * Characters not allowed in a folder name.
  *
  * The first group (\ / : * ? " < > |) would fail at the filesystem level;
- * the second (# ^ [ ]) would work but breaks Obsidian's link syntax.
+ * the second (# ^ [ ]) would work but breaks Obsidian's link syntax; the
+ * third (` $ =) is harmless in a path but not in a note, because the folder
+ * name is spliced verbatim into every rewritten link and `$= is Dataview's
+ * inline-execution primitive. The title never reaches the server's no-code
+ * gate, so this is the only place it is checked.
  */
-const ILLEGAL_NAME_CHARS = /[\\/:*?"<>|#^[\]]/g;
+const ILLEGAL_NAME_CHARS = /[\\/:*?"<>|#^[\]`$=]/g;
 
 /**
  * Control characters and NUL — these truncate a path at the OS level.
@@ -122,15 +127,19 @@ export async function installPlan(
 	archive: ArrayBuffer,
 	packageTitle: string,
 	baseFolder: string,
+	paths: string[],
+	tagPrefix: string,
 ): Promise<string> {
 	const root = await createPackageFolder(app, baseFolder, packageTitle);
 
 	try {
 		const folders = new Set<string>([root]);
+		const localize = localizer(root, paths, tagPrefix);
 		await eachEntryAsync(archive, async (entry) => {
-			const path = `${root}/${safeRelativePath(entry.name)}`;
+			const relative = safeRelativePath(entry.name);
+			const path = `${root}/${relative}`;
 			await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
-			await app.vault.createBinary(path, entry.data.buffer as ArrayBuffer);
+			await app.vault.createBinary(path, localize(relative, entry.data).buffer as ArrayBuffer);
 		});
 	} catch (error) {
 		// A half-written package is worse than no package.
@@ -160,6 +169,8 @@ interface PlannedWrite {
 /** A validated archive matched against the folder it will be written over. */
 export interface UpdatePlan {
 	root: string;
+	/** Tag namespace prefix chosen at install time. */
+	tagPrefix: string;
 	writes: PlannedWrite[];
 }
 
@@ -179,6 +190,8 @@ export async function planUpdate(
 	archive: ArrayBuffer,
 	root: string,
 	installedAt: number,
+	paths: string[],
+	tagPrefix: string,
 ): Promise<UpdatePlan> {
 	assertInsideVault(root);
 
@@ -188,6 +201,8 @@ export async function planUpdate(
 	// like a new file and then collide at the filesystem level mid-write.
 	const existingFiles = indexFolder(app, root);
 	const writes: PlannedWrite[] = [];
+	// Uses the same localization transformer as applyUpdate to ensure consistent comparisons.
+	const localize = localizer(root, paths, tagPrefix);
 
 	await eachEntryAsync(archive, async (entry) => {
 		const path = safeRelativePath(entry.name);
@@ -201,10 +216,11 @@ export async function planUpdate(
 		// Both buffers fall out of scope at the end of the call, so the
 		// comparison costs two files' worth of memory, not the whole package.
 		const current = await app.vault.readBinary(existing);
-		writes.push({ path, status: compare(path, current, entry, existing.stat.mtime > installedAt), existing });
+		const status = compare(path, current, entry.data, localize(path, entry.data), existing.stat.mtime > installedAt);
+		writes.push({ path, status, existing });
 	});
 
-	return { root, writes };
+	return { root, tagPrefix, writes };
 }
 
 /**
@@ -219,6 +235,7 @@ export async function planUpdate(
 export async function applyUpdate(app: App, archive: ArrayBuffer, update: UpdatePlan): Promise<void> {
 	const folders = new Set<string>([update.root]);
 	const planned = new Map(update.writes.map((write) => [write.path, write]));
+	const localize = localizer(update.root, update.writes.map((write) => write.path), update.tagPrefix);
 
 	await eachEntryAsync(archive, async (entry) => {
 		const write = planned.get(safeRelativePath(entry.name));
@@ -229,7 +246,7 @@ export async function applyUpdate(app: App, archive: ArrayBuffer, update: Update
 		const path = `${update.root}/${write.path}`;
 		await ensureFolder(app, path.slice(0, path.lastIndexOf('/')), folders);
 
-		const data = entry.data.buffer as ArrayBuffer;
+		const data = localize(write.path, entry.data).buffer as ArrayBuffer;
 
 		if (write.existing === null) {
 			await app.vault.createBinary(path, data);
@@ -249,8 +266,7 @@ export async function applyUpdate(app: App, archive: ArrayBuffer, update: Update
 }
 
 /** How an installed file compares to the archive. */
-function compare(path: string, current: ArrayBuffer, entry: TarEntry, touched: boolean): FileStatus {
-	const wanted = entry.data;
+function compare(path: string, current: ArrayBuffer, raw: Uint8Array, wanted: Uint8Array, touched: boolean): FileStatus {
 	if (sameBytes(current, wanted)) return 'identical';
 
 	// A canvas is compared through canvasKey() rather than byte for byte:
@@ -258,11 +274,20 @@ function compare(path: string, current: ArrayBuffer, entry: TarEntry, touched: b
 	if (extensionOf(path) === 'canvas') {
 		const decoder = new TextDecoder();
 		try {
-			if (canvasKey(decoder.decode(current)) === canvasKey(decoder.decode(wanted))) return 'identical';
+			const key = canvasKey(decoder.decode(current));
+			if (key === canvasKey(decoder.decode(wanted))) return 'identical';
+			// The legacy case below, but through canvasKey(): Obsidian's metadata
+			// stamp means the raw bytes cannot match even when link rewriting is
+			// the only real difference.
+			if (wanted !== raw && key === canvasKey(decoder.decode(raw))) return 'changed';
 		} catch {
 			/* not decodable as text — fall through to the byte answer */
 		}
 	}
+
+	// If on-disk bytes match raw archive bytes, this is a legacy install from
+	// before link rewriting. Overwrite cleanly instead of treating it as a local edit.
+	if (wanted !== raw && sameBytes(current, raw)) return 'changed';
 
 	// Different content AND touched since the install: the reader wrote this,
 	// so it goes to the trash rather than under the new bytes.
