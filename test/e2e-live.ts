@@ -7,6 +7,7 @@
  * single executable fragment never gets in at all.
  */
 import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { TFile, TFolder } from 'obsidian';
 import { publishFolder } from '../src/api/publishApi';
 import { fetchPackages, fetchPackage, downloadPackageArchive, deletePackage } from '../src/api/packagesApi';
@@ -85,7 +86,19 @@ const CANVAS = JSON.stringify({
 	edges: [],
 });
 
-const SOURCE: Record<string, string> = { 'Course/note.md': NOTE, 'Course/board.canvas': CANVAS, 'Course/plain.md': '# Just text\n' };
+/**
+ * A bare-name link to a file in a subfolder — the one shape the publish side
+ * has to spell out, because "deep" means nothing in the reader's vault.
+ */
+const LINKED = 'see [[deep]]';
+
+const SOURCE: Record<string, string> = {
+	'Course/note.md': NOTE,
+	'Course/board.canvas': CANVAS,
+	'Course/plain.md': '# Just text\n',
+	'Course/linked.md': LINKED,
+	'Course/Extra/deep.md': '# Deep\n',
+};
 
 /** One executable fragment, in a package that is otherwise ordinary. */
 const ARMED: Record<string, string> = { 'Armed/note.md': '# Lesson\n\n```dataviewjs\napp.vault.adapter.write("pwn.md", "owned");\n```\n' };
@@ -93,10 +106,19 @@ const ARMED: Record<string, string> = { 'Armed/note.md': '# Lesson\n\n```datavie
 function sourceApp(source: Record<string, string> = SOURCE, root = 'Course') {
 	const files = Object.keys(source).map((path) => Object.assign(new TFile(), { path, extension: path.split('.').pop(), name: path.split('/').pop() }));
 	const folder = Object.assign(new TFolder(), { path: root, isRoot: () => false });
+	const byPath = new Map(files.map((file) => [file.path, file]));
 	const app: any = {
 		vault: { readBinary: async (f: any) => enc.encode(source[f.path]).buffer },
-		// Empty cache mock since this fixture has no internal links.
-		metadataCache: { getFileCache: () => null, getFirstLinkpathDest: () => null },
+		// Resolves like Obsidian does, or the publish-side rewrite below never
+		// runs and the assertions about it pass for the wrong reason.
+		metadataCache: {
+			getFileCache: (f: any) =>
+				source[f.path] === LINKED
+					? { links: [{ link: 'deep', original: '[[deep]]', position: { start: { offset: 4 }, end: { offset: 12 } } }] }
+					: null,
+			getFirstLinkpathDest: (linkpath: string) =>
+				byPath.get(`${root}/${linkpath}.md`) ?? [...byPath.values()].find((f: any) => f.name === `${linkpath}.md`) ?? null,
+		},
 	};
 	return { app, folder, files };
 }
@@ -166,7 +188,7 @@ async function run() {
 
 	console.log('\n=== 5. inspect ===');
 	const plan = await inspectArchive(archive);
-	check('three files planned', plan.paths.length === 3, `-> ${JSON.stringify(plan.paths)}`);
+	check('five files planned', plan.paths.length === 5, `-> ${JSON.stringify(plan.paths)}`);
 
 	console.log('\n=== 6. what actually lands on disk ===');
 	const vault = new Vault();
@@ -175,8 +197,17 @@ async function run() {
 	const note = vault.text(`${root}/note.md`);
 	const canvas = vault.text(`${root}/board.canvas`);
 
-	// No internal links exist in this fixture, so the note arrives unchanged.
+	// Nothing in NOTE is a link, so it has to survive byte for byte.
 	check('the note arrives exactly as published', note === NOTE, '-> it was rewritten');
+	// The linked note is the opposite case: it must NOT arrive as published.
+	// Checked against the archive itself — tar stores file bodies verbatim, so
+	// the gunzipped bytes carry the note's text. Reading it back out of the
+	// install would not separate the two halves: the install-side fallback
+	// resolves a bare name too, and would produce the same line either way.
+	const unpacked = gunzipSync(Buffer.from(archive)).toString('utf8');
+	check('a bare link was spelled out for the package', unpacked.includes('see [[Extra/deep|deep]]'), '-> the publish-side rewrite did not run');
+	check('and the bare form is gone from the archive', !unpacked.includes('see [[deep]]'));
+	check('and it is anchored to the install folder on the way in', vault.text(`${root}/linked.md`) === `see [[${root}/Extra/deep|deep]]`, `-> ${vault.text(`${root}/linked.md`)}`);
 	check('the canvas arrives exactly as published', canvas === CANVAS, '-> it was rewritten');
 	check('the DQL query survives', note.includes('```dataview\n'));
 	check('inline DQL survives', note.includes('`= this.file.name`'));

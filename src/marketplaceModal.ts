@@ -21,7 +21,7 @@ import {
 	type PackagePlan,
 	type UpdatePlan,
 } from './installs';
-import { tagSlug } from './links';
+import { rootBlocksLinks, tagSlug } from './links';
 import { UnauthorizedError } from './api/api';
 import { armButton } from './ui';
 import { renderConfirmRow } from './ui';
@@ -669,6 +669,8 @@ export class MarketplaceModal extends Modal {
 				.addToggle((toggle) => toggle.onChange((value) => { tagPrefix = value ? slug : ''; }));
 		}
 
+		this.warnIfLinksBlocked(this.plugin.settings.downloadFolder);
+
 		const shadowed = findShadowedNotes(this.app, plan.paths);
 		if (shadowed.length > 0) {
 			// Obsidian resolves [[Note]] by name across the whole vault, so
@@ -753,6 +755,8 @@ export class MarketplaceModal extends Modal {
 				'Files that are not part of the package are left alone.',
 		});
 
+		this.warnIfLinksBlocked(update.root);
+
 		if (modified.length > 0) {
 			this.bodyEl.createEl('h4', { text: `Edited since you installed (${modified.length})` });
 			const list = this.bodyEl.createDiv({ cls: 'marketplace-findings' });
@@ -769,6 +773,22 @@ export class MarketplaceModal extends Modal {
 			() => void this.writeUpdate(pkg, archive, update, button),
 			() => void this.showDetail(pkg),
 		);
+	}
+
+	/**
+	 * Silence here reads as a broken package: the links would simply not
+	 * resolve, with nothing pointing at the folder name that caused it.
+	 */
+	private warnIfLinksBlocked(root: string) {
+		if (!rootBlocksLinks(root)) return;
+
+		const row = this.bodyEl.createDiv({ cls: 'marketplace-finding marketplace-finding-warning' });
+		row.createDiv({ cls: 'marketplace-finding-label', text: 'Links in this package will not be rewritten' });
+		row.createDiv({ cls: 'marketplace-finding-path', text: root });
+		row.createDiv({
+			cls: 'marketplace-finding-path',
+			text: 'The download folder contains one of [ ] | # ^ ` $ = < >, which cannot go into a link. The package installs, but its internal links and tags stay as the author wrote them. Rename the folder in settings to fix it.',
+		});
 	}
 
 	private rememberInstall(pkg: Package, path: string, tagPrefix: string) {

@@ -13,6 +13,21 @@ export interface PublishMetadata {
 }
 
 /**
+ * Where package-relative paths start, and which vault files count as inside.
+ *
+ * Shared so the review screen and the packer cannot end up describing two
+ * different packages — the count the author is shown is only honest while
+ * both are derived from the same folder and file list.
+ */
+export function packageScope(folder: TFolder, files: TFile[]): { prefix: string; inPackage: Set<string> } {
+	return {
+		// the vault root's path is "/", so there's no prefix to strip in that case
+		prefix: folder.isRoot() ? '' : folder.path + '/',
+		inPackage: new Set(files.map((file) => file.path)),
+	};
+}
+
+/**
  * Packs the files into an archive and uploads it to the marketplace server.
  *
  * `files` was already validated by openPublishModal(), so this publishes
@@ -30,10 +45,9 @@ export async function publishFolder(
 	settings: MarketplaceSettings,
 	packageId?: string,
 ): Promise<void> {
-	// the vault root's path is "/", so there's no prefix to strip in that case
-	const prefix = folder.isRoot() ? '' : folder.path + '/';
+	const { prefix, inPackage } = packageScope(folder, files);
 
-	const archive = await packFolder(app, files, prefix);
+	const archive = await packFolder(app, files, prefix, inPackage);
 
 	// The only point where the real compressed size is known — the review
 	// screen only has the uncompressed sum, which says little about how the
@@ -63,9 +77,8 @@ export async function publishFolder(
  * Normalizes internal links to be package-relative using the author's vault
  * metadata cache. The author's vault files are not modified.
  */
-async function packFolder(app: App, files: TFile[], prefix: string): Promise<ArrayBuffer> {
+async function packFolder(app: App, files: TFile[], prefix: string, inPackage: Set<string>): Promise<ArrayBuffer> {
 	const entries = [];
-	const inPackage = new Set(files.map((file) => file.path));
 
 	for (const file of files) {
 		const data = new Uint8Array(await app.vault.readBinary(file));

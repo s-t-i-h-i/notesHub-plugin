@@ -1,8 +1,8 @@
 import { ButtonComponent, Modal, Notice, Setting, TFile, TFolder } from 'obsidian';
 import MarketplacePlugin from './main';
 import { collectFiles, findBrokenLinks, findNameProblems, type BrokenLink } from './files';
-import { publishFolder } from './api/publishApi';
-import { normalize } from './links';
+import { packageScope, publishFolder } from './api/publishApi';
+import { needsNormalizing } from './links';
 import { fetchPackages, fetchTags, MAX_IDS_PER_QUERY, type Package } from './api/packagesApi';
 import { UnauthorizedError } from './api/api';
 import { extensionOf, hasExif } from './verify';
@@ -116,7 +116,7 @@ class PublishModal extends Modal {
 		this.bodyEl.empty();
 		this.bodyEl.createDiv({ text: 'Checking contents...' });
 
-		const prefix = this.folder.isRoot() ? '' : this.folder.path + '/';
+		const { prefix } = packageScope(this.folder, this.files);
 		const nameProblems = findNameProblems(this.files, prefix);
 		const links = findBrokenLinks(this.app, this.files);
 		const { withExif, codeProblems, rewritten } = await this.inspectFiles();
@@ -224,8 +224,7 @@ class PublishModal extends Modal {
 	private async inspectFiles(): Promise<{ withExif: string[]; codeProblems: string[]; rewritten: number }> {
 		const withExif: string[] = [];
 		const codeProblems: string[] = [];
-		const prefix = this.folder.isRoot() ? '' : this.folder.path + '/';
-		const inPackage = new Set(this.files.map((file) => file.path));
+		const { prefix, inPackage } = packageScope(this.folder, this.files);
 		let rewritten = 0;
 
 		// One pass, and the reads issued together rather than awaited one at a
@@ -243,7 +242,7 @@ class PublishModal extends Modal {
 			}
 
 			// Count files that contain internal links needing normalization.
-			if (normalize(this.app, file, data, prefix, inPackage) !== data) rewritten++;
+			if (needsNormalizing(this.app, file, data, prefix, inPackage)) rewritten++;
 
 			try {
 				codeProblems.push(...problemsIn(file.path, new TextDecoder().decode(data)));

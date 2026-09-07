@@ -74,6 +74,20 @@ check('an external link is untouched', localize('[t](https://example.com/a.md)')
 check('a mailto link is untouched', localize('[t](mailto:a@b.c)') === '[t](mailto:a@b.c)');
 check('an anchor-only link is untouched', localize('[t](#heading)') === '[t](#heading)');
 
+console.log('\n--- install: names tar.ts allows ---');
+// $ = < > are inert inside a link target, and tar.ts accepts them in entry
+// names, so rejecting them silently dropped these files' links.
+check('a $ in the file name keeps its link', localize('see [[Budget $2024]]', 'note.md', ROOT, '', ['Budget $2024.md']) === `see [[${ROOT}/Budget $2024|Budget $2024]]`, `-> ${localize('see [[Budget $2024]]', 'note.md', ROOT, '', ['Budget $2024.md'])}`);
+check('an = in the file name keeps its link', localize('see [[A=B]]', 'note.md', ROOT, '', ['A=B.md']) === `see [[${ROOT}/A=B|A=B]]`, `-> ${localize('see [[A=B]]', 'note.md', ROOT, '', ['A=B.md'])}`);
+// A backtick would still let `$= out of the link and into Dataview.
+check('a backtick in the file name still refuses', localize('see [[a`b]]', 'note.md', ROOT, '', ['a`b.md']) === 'see [[a`b]]', `-> ${localize('see [[a`b]]', 'note.md', ROOT, '', ['a`b.md'])}`);
+
+console.log('\n--- install: bare name in a subfolder ---');
+// Published before the publish side spelled these out, or missed by its cache.
+check('a bare name resolves to the nested file', localize('see [[Deep Note]]', 'note.md', ROOT, '', ['Extra/Deep Note.md']) === `see [[${ROOT}/Extra/Deep Note|Deep Note]]`, `-> ${localize('see [[Deep Note]]', 'note.md', ROOT, '', ['Extra/Deep Note.md'])}`);
+check('an ambiguous bare name is left alone', localize('see [[A]]', 'note.md', ROOT, '', ['One/A.md', 'Two/A.md']) === 'see [[A]]', `-> ${localize('see [[A]]', 'note.md', ROOT, '', ['One/A.md', 'Two/A.md'])}`);
+check('a full path still wins over the bare index', localize('see [[Extra/Deep Note]]', 'note.md', ROOT, '', ['Extra/Deep Note.md']) === `see [[${ROOT}/Extra/Deep Note|Extra/Deep Note]]`, `-> ${localize('see [[Extra/Deep Note]]', 'note.md', ROOT, '', ['Extra/Deep Note.md'])}`);
+
 console.log('\n--- install: refusals ---');
 {
 	// Skip rewriting if the destination folder contains characters breaking wikilink syntax.
@@ -122,6 +136,10 @@ console.log('\n--- install: frontmatter tags ---');
 	// CRLF: the tag line keeps its \r, so the offset must not count it.
 	const crlf = '---\r\ntags: anki, nauka\r\nauthor: x\r\n---\r\nbody';
 	check('a CRLF comma list is nested', localize(crlf, 'note.md', ROOT, 'my-course') === '---\r\ntags: my-course/anki, my-course/nauka\r\nauthor: x\r\n---\r\nbody', `-> ${JSON.stringify(localize(crlf, 'note.md', ROOT, 'my-course'))}`);
+
+	// YAML allows a blank line inside a block sequence; it must not end ours.
+	const gap = '---\ntags:\n  - anki\n\n  - nauka\n---\nbody';
+	check('a blank line does not end the tag list', localize(gap, 'note.md', ROOT, 'my-course') === '---\ntags:\n  - my-course/anki\n\n  - my-course/nauka\n---\nbody', `-> ${JSON.stringify(localize(gap, 'note.md', ROOT, 'my-course'))}`);
 
 	const other = '---\ntitle: anki\naliases:\n  - anki\n---\nbody';
 	check('another key is not touched', localize(other, 'note.md', ROOT, 'my-course') === other, `-> ${localize(other, 'note.md', ROOT, 'my-course')}`);

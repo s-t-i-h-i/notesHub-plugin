@@ -35,10 +35,23 @@ const MD_ALL = /(!?)\[([^\]]*)\]\(\s*<?([^)<>\s]*)>?\s*\)/g;
 const EXTERNAL = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i;
 
 /**
- * Characters that must not reach a rewritten link. [ ] | # ^ break wikilink
- * syntax; ` $ = < > are inert in a path but not in a note, and the folder is
- * spliced in verbatim. Checked here as well as in toFolderName() because the
- * download folder is a free-text setting that never passes through it.
+ * Characters a link target cannot carry. [ ] | # ^ end the wikilink or start
+ * an alias/subpath, so such a target cannot be written at all; a backtick
+ * opens a code span and would let `$= out of the link and into Dataview;
+ * < > stay out because Windows forbids them in a filename anyway, so nothing
+ * legitimate is lost by keeping them away from a renderer.
+ *
+ * Deliberately NOT $ or =: both are inert inside a target without a backtick
+ * to open a code span, and tar.ts accepts them in entry names — rejecting
+ * them silently dropped every link to a file named like "Budget $2024.md".
+ */
+const UNSAFE_PATH = /[[\]|#^`<>]/;
+
+/**
+ * The same, plus the characters that are only dangerous when spliced in
+ * verbatim ahead of every target. Checked here as well as in toFolderName()
+ * because the download folder is a free-text setting that never passes
+ * through it.
  */
 const UNSAFE_ROOT = /[[\]|#^`$=<>]/;
 
@@ -107,8 +120,65 @@ export function normalize(app: App, file: TFile, data: Uint8Array, prefix: strin
 	return transform(data, (text) =>
 		extension === 'canvas'
 			? resolveCanvas(app, file, text, prefix, inPackage)
-			: applyEdits(text, resolveLinks(app, file, prefix, inPackage)),
+			: applyEdits(text, [
+				...resolveLinks(app, file, prefix, inPackage),
+				...frontmatterLinks(app, file, text, prefix, inPackage),
+			]),
 	);
+}
+
+/**
+ * Whether normalize() would change this file, without paying for the rewrite.
+ *
+ * The review screen wants a count, not the bytes, and it asks for every note
+ * in the folder before it paints — running the full rewrite here and again in
+ * packFolder() doubled a wait the author already notices on a large folder.
+ * Markdown answers from the cache alone; only the rare note with a link in a
+ * YAML property has to fall back to the real thing.
+ */
+export function needsNormalizing(app: App, file: TFile, data: Uint8Array, prefix: string, inPackage: Set<string>): boolean {
+	const extension = extensionOf(file.path);
+	if (extension === 'canvas') return normalize(app, file, data, prefix, inPackage) !== data;
+	if (extension !== 'md') return false;
+
+	if (resolveLinks(app, file, prefix, inPackage).length > 0) return true;
+
+	const refs = app.metadataCache.getFileCache(file)?.frontmatterLinks ?? [];
+
+	return refs.length > 0 && normalize(app, file, data, prefix, inPackage) !== data;
+}
+
+/**
+ * The same for a link written in a YAML property.
+ *
+ * Separate from resolveLinks() because FrontmatterLinkCache carries no
+ * position, so each one has to be located in the frontmatter block by its own
+ * text. One that appears there twice is left alone rather than guessed at.
+ */
+function frontmatterLinks(app: App, file: TFile, text: string, prefix: string, inPackage: Set<string>): Edit[] {
+	const refs = app.metadataCache.getFileCache(file)?.frontmatterLinks ?? [];
+	// FRONTMATTER is anchored at ^, so a match offset is a whole-file offset.
+	const block = refs.length === 0 ? null : FRONTMATTER.exec(text);
+	if (block === null) return [];
+
+	const edits: Edit[] = [];
+	for (const ref of refs) {
+		const { path, subpath } = splitSubpath(ref.link);
+		if (path === '') continue;
+
+		const dest = app.metadataCache.getFirstLinkpathDest(path, file.path);
+		if (dest === null || !inPackage.has(dest.path)) continue;
+
+		const replacement = retarget(ref.original, dest.path.slice(prefix.length), subpath);
+		if (replacement === null || replacement === ref.original) continue;
+
+		const at = block[0].indexOf(ref.original);
+		if (at === -1 || block[0].indexOf(ref.original, at + 1) !== -1) continue;
+
+		edits.push({ start: at, end: at + ref.original.length, original: ref.original, text: replacement });
+	}
+
+	return edits;
 }
 
 /**
@@ -129,22 +199,47 @@ export function resolveCanvas(app: App, file: TFile, text: string, prefix: strin
 // ------------------------------------------------------------------ installing
 
 /**
+ * Whether a destination folder disables link rewriting and tag namespacing.
+ *
+ * localizer() falls back to writing the archive through untouched rather than
+ * splice an unsafe folder name into every link, which leaves the package's
+ * internal links pointing at nothing. The download folder is free text, so
+ * the screens that install say this out loud instead of letting it look like
+ * the package itself is broken.
+ */
+export function rootBlocksLinks(root: string): boolean {
+	return UNSAFE_ROOT.test(root);
+}
+
+/**
  * Creates a transformer to rewrite package links and tags during installation
  * and update comparisons.
  */
 export function localizer(root: string, paths: string[], tagPrefix: string): Localize {
-	if (UNSAFE_ROOT.test(root)) return (_path, data) => data;
+	if (rootBlocksLinks(root)) return (_path, data) => data;
 
 	const index = new Map(paths.map((path) => [path.toLowerCase(), path]));
 	// Sanitize prefix to ensure valid tag syntax.
 	const prefix = tagPrefix.replace(TAG_PREFIX_ALLOWED, '');
 
-	const target = (linkpath: string): string | null => {
-		const relative = index.get(linkpath.toLowerCase()) ?? index.get(`${linkpath.toLowerCase()}.md`);
-		if (relative === undefined) return null;
+	// Obsidian resolves [[Deep Note]] to Extra/Deep Note.md by bare name, and
+	// the publish side only spells that out for links it could resolve — a
+	// package built before it, or a link its cache missed, still arrives bare.
+	// An ambiguous name maps to null: guessing which file was meant is worse
+	// than leaving the link alone.
+	const byName = new Map<string, string | null>();
+	for (const path of paths) {
+		const name = stripMd(path.slice(path.lastIndexOf('/') + 1)).toLowerCase();
+		byName.set(name, byName.has(name) ? null : path);
+	}
 
-		// Match case-insensitively and preserve whether .md extension was originally shown.
-		return `${root}/${extensionOf(linkpath) === '' ? stripMd(relative) : relative}`;
+	const target = (linkpath: string): string | null => {
+		const key = linkpath.toLowerCase();
+		// Match case-insensitively; the extension is settled downstream —
+		// retarget() strips .md for a wikilink and keeps it for a markdown one.
+		const relative = index.get(key) ?? index.get(`${key}.md`) ?? byName.get(stripMd(key)) ?? null;
+
+		return relative === null ? null : `${root}/${relative}`;
 	};
 
 	return (path, data) => {
@@ -236,13 +331,13 @@ function rewriteTargets(text: string, resolve: (linkpath: string) => string | nu
  */
 function retarget(original: string, relative: string, subpath: string): string | null {
 	const wiki = WIKI.exec(original);
-	if (wiki !== undefined && wiki !== null) {
+	if (wiki !== null) {
 		const embed = wiki[1] ?? '';
 		const body = wiki[2] ?? '';
 		const pipe = body.indexOf('|');
 		const path = stripMd(relative);
 		// Only validate path; subpaths intentionally use '#' and '^'.
-		if (UNSAFE_ROOT.test(path)) return null;
+		if (UNSAFE_PATH.test(path)) return null;
 
 		const target = `${path}${subpath}`;
 		if (embed === '!') return `![[${target}${pipe === -1 ? '' : body.slice(pipe)}]]`;
@@ -387,7 +482,9 @@ function frontmatterTags(text: string, nest: (body: string, start: number) => vo
 			}
 		} else if (inList && entry !== '') {
 			nestOne(entry, offset + line.indexOf(entry, line.indexOf('-')), nest);
-		} else if (!/^[ \t]/.test(line)) {
+		} else if (line.trim() !== '' && !/^[ \t]/.test(line)) {
+			// A blank line does not end a YAML block sequence, so it must not
+			// end ours either — the items after it are still tags.
 			inList = false;
 		}
 
@@ -418,10 +515,20 @@ function nestOne(raw: string, start: number, nest: (body: string, start: number)
 const blank = (part: string) => ' '.repeat(part.length);
 
 /**
+ * Last input and output of maskCode(). Installing runs rewriteTargets() and
+ * then prefixTags() over the same note, and most notes come out of the first
+ * unchanged — so the second pass usually asks for a mask that was just built.
+ * Safe as a plain cache because maskCode() is a pure function of its input.
+ */
+let lastMasked: { text: string; masked: string } | null = null;
+
+/**
  * Masks out code blocks and inline code with spaces to preserve exact
  * character offsets for later replacement.
  */
 function maskCode(text: string): string {
+	if (lastMasked !== null && lastMasked.text === text) return lastMasked.masked;
+
 	let fence = '';
 
 	const lines = text.split('\n').map((line) => {
@@ -444,7 +551,10 @@ function maskCode(text: string): string {
 		return line.replace(/`+[^`\n]*`+/g, blank);
 	});
 
-	return lines.join('\n');
+	const masked = lines.join('\n');
+	lastMasked = { text, masked };
+
+	return masked;
 }
 
 /** maskCode() plus links, so a link's subpath '#' is not matched as a tag. */

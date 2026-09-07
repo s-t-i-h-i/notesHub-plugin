@@ -171,6 +171,13 @@ export interface UpdatePlan {
 	root: string;
 	/** Tag namespace prefix chosen at install time. */
 	tagPrefix: string;
+	/**
+	 * Every path in the archive, carried so applyUpdate() localizes links
+	 * against exactly the index planUpdate() judged them with. Re-deriving it
+	 * from `writes` would silently drift the moment planning skips an entry,
+	 * and a file compared as identical would then be written with other bytes.
+	 */
+	paths: string[];
 	writes: PlannedWrite[];
 }
 
@@ -220,7 +227,7 @@ export async function planUpdate(
 		writes.push({ path, status, existing });
 	});
 
-	return { root, tagPrefix, writes };
+	return { root, tagPrefix, paths, writes };
 }
 
 /**
@@ -235,7 +242,7 @@ export async function planUpdate(
 export async function applyUpdate(app: App, archive: ArrayBuffer, update: UpdatePlan): Promise<void> {
 	const folders = new Set<string>([update.root]);
 	const planned = new Map(update.writes.map((write) => [write.path, write]));
-	const localize = localizer(update.root, update.writes.map((write) => write.path), update.tagPrefix);
+	const localize = localizer(update.root, update.paths, update.tagPrefix);
 
 	await eachEntryAsync(archive, async (entry) => {
 		const write = planned.get(safeRelativePath(entry.name));
