@@ -442,7 +442,7 @@ class PublishModal extends Modal {
 		button.setButtonText('Publishing...');
 
 		try {
-			await publishFolder(
+			const result = await publishFolder(
 				this.app,
 				this.folder,
 				this.files,
@@ -455,7 +455,20 @@ class PublishModal extends Modal {
 				this.targetId || undefined,
 			);
 
-			new Notice(this.targetId ? 'Update published.' : 'Published.', 10_000);
+			// "Published" would be a lie for a package that is stored but not
+			// visible to anyone. Moderation answers this way when it could not
+			// finish inside the request — rare, and worth saying plainly rather
+			// than leaving the author to wonder where the package went. It shows
+			// up under "My packages" in the meantime.
+			if (result.moderationState === 'pending') {
+				new Notice(
+					'Uploaded, and waiting on content review. It appears in the catalog once that finishes — you can see it under "My packages" until then.',
+					15_000,
+				);
+			} else {
+				new Notice(this.targetId ? 'Update published.' : 'Published.', 10_000);
+			}
+
 			this.close();
 		} catch (error) {
 			console.error(error);

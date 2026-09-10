@@ -22,6 +22,19 @@ export interface Package {
 	sha256: string;
 	/** The server has since marked this package as malicious. */
 	revoked: boolean;
+	/**
+	 * Where the package stands with automatic moderation.
+	 *
+	 * 'approved' is the only state the public catalog returns, so this is
+	 * almost always that. It is 'pending' or 'rejected' in exactly one place:
+	 * your own packages, fetched with ?author_id=, which is how an author finds
+	 * out that a publish is still being checked rather than assuming it
+	 * vanished. Anything the server does not say reads as 'approved', so an
+	 * older worker keeps working.
+	 */
+	moderationState: 'approved' | 'pending' | 'rejected';
+	/** Why it was refused. Empty unless moderationState is 'rejected'. */
+	moderationReason: string;
 }
 
 export async function downloadPackageArchive(
@@ -162,6 +175,24 @@ export async function deletePackage(
 	});
 }
 
+/**
+ * Tells the server something is wrong with a package.
+ *
+ * Automatic moderation deliberately decides not to look at most text — that is
+ * what makes checking a public catalog affordable at all — so a cheap way to
+ * correct it afterwards is part of the design rather than an afterthought. The
+ * report opens a review a person reads.
+ */
+export async function reportPackage(settings: MarketplaceSettings, id: string, reason: string): Promise<void> {
+	await apiRequest(settings, {
+		path: `/report/${encodeURIComponent(id)}`,
+		method: 'POST',
+		contentType: 'application/json',
+		body: JSON.stringify({ reason }),
+		auth: true,
+	});
+}
+
 /** Converts a raw database row into a safe Package object. */
 function toPackage(raw: unknown): Package {
 	const row = (raw ?? {}) as Record<string, unknown>;
@@ -183,7 +214,16 @@ function toPackage(raw: unknown): Package {
 		structure: toStructure(row.structure),
 		sha256: asText(row.sha256),
 		revoked: Number(row.revoked) === 1,
+		// Defaulting to 'approved' is what keeps an older worker working: it
+		// sends no such column, and a package it returns at all is one it is
+		// willing to serve.
+		moderationState: toModerationState(row.moderation_state),
+		moderationReason: asText(row.moderation_reason),
 	};
+}
+
+function toModerationState(value: unknown): Package['moderationState'] {
+	return value === 'pending' || value === 'rejected' ? value : 'approved';
 }
 
 /** `structure` arrives as a JSON array of paths, serialized as text. */

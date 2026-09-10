@@ -8,6 +8,7 @@ import {
 	fetchPackage,
 	fetchPackages,
 	fetchTags,
+	reportPackage,
 	MAX_IDS_PER_QUERY,
 	type SortKey,
 } from './api/packagesApi';
@@ -473,6 +474,15 @@ export class MarketplaceModal extends Modal {
 		if (this.orphans.has(pkg.id)) {
 			card.createDiv({ cls: 'marketplace-badge mod-muted', text: 'No longer published' });
 		}
+		// Only ever your own packages: the public catalog returns approved rows
+		// and nothing else. Without this the author sees a package that is
+		// nowhere to be found and no reason why.
+		if (pkg.moderationState === 'pending') {
+			card.createDiv({ cls: 'marketplace-badge mod-muted', text: 'Awaiting review' });
+		}
+		if (pkg.moderationState === 'rejected') {
+			card.createDiv({ cls: 'marketplace-badge mod-muted', text: 'Refused' });
+		}
 		if (meta) card.createDiv({ cls: 'marketplace-card-meta', text: meta });
 		if (pkg.description) {
 			card.createDiv({ cls: 'marketplace-card-desc', text: pkg.description });
@@ -556,10 +566,42 @@ export class MarketplaceModal extends Modal {
 		download.onClick(() => void this.download(pkg, download));
 
 		// A UI hint, not a security check — ownership is verified server-side.
-		if (pkg.authorId && pkg.authorId === this.plugin.settings.userId) {
+		const mine = Boolean(pkg.authorId) && pkg.authorId === this.plugin.settings.userId;
+		if (mine) {
 			armButton(new ButtonComponent(actions), 'Delete', 'Are you sure?', () => {
 				void this.remove(pkg);
 			});
+		}
+
+		// Automatic moderation deliberately does not look at most text — that is
+		// what makes checking a public catalog affordable — so the way to correct
+		// it afterwards has to be somewhere a reader can actually find. Not on
+		// your own packages: reporting yourself is noise in a queue a person reads.
+		if (!mine) {
+			armButton(new ButtonComponent(actions), 'Report', 'Send report?', () => {
+				void this.report(pkg);
+			});
+		}
+
+		// The author's own view of a package that did not make it. The reason is
+		// the server's own words, which is the only place they are shown.
+		if (mine && pkg.moderationState === 'rejected' && pkg.moderationReason) {
+			detail.createDiv({ cls: 'marketplace-detail-desc', text: pkg.moderationReason });
+		}
+	}
+
+	/** Sends a report and says what happened. Deliberately undramatic — it opens a review, it does not remove anything. */
+	private async report(pkg: Package) {
+		try {
+			await reportPackage(this.plugin.settings, pkg.id, '');
+			new Notice('Reported. Someone will look at it.', 8_000);
+		} catch (error) {
+			console.error(error);
+			new Notice(
+				error instanceof UnauthorizedError
+					? 'Log in from the plugin settings to report a package.'
+					: 'Could not send the report: ' + (error instanceof Error ? error.message : String(error)),
+			);
 		}
 	}
 
@@ -601,6 +643,20 @@ export class MarketplaceModal extends Modal {
 			// here means the reason reaches the reader instead of an HTTP code.
 			if (pkg.revoked) {
 				this.refuse(pkg, 'This package was withdrawn as malicious. If you have it installed, delete the folder.');
+				return;
+			}
+
+			// Reachable only from "My packages" — the catalog never lists these.
+			// The server answers 404 either way; this says which of the two it is.
+			if (pkg.moderationState === 'pending') {
+				this.refuse(pkg, 'This package is still being checked. It becomes available once that finishes.');
+				return;
+			}
+			if (pkg.moderationState === 'rejected') {
+				this.refuse(
+					pkg,
+					pkg.moderationReason || 'This package was refused by content moderation.',
+				);
 				return;
 			}
 
@@ -879,6 +935,11 @@ function recordAsPackage(id: string, record: InstallRecord): Package {
 		structure: [],
 		sha256: '',
 		revoked: false,
+		// An installed package was approved when it was downloaded, and the
+		// local record says nothing about moderation. enrichInstalled() swaps in
+		// the server's copy, which carries the real answer.
+		moderationState: 'approved',
+		moderationReason: '',
 	};
 }
 

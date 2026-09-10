@@ -44,7 +44,7 @@ export async function publishFolder(
 	metadata: PublishMetadata,
 	settings: MarketplaceSettings,
 	packageId?: string,
-): Promise<void> {
+): Promise<PublishResult> {
 	const { prefix, inPackage } = packageScope(folder, files);
 
 	const archive = await packFolder(app, files, prefix, inPackage);
@@ -88,13 +88,28 @@ async function packFolder(app: App, files: TFile[], prefix: string, inPackage: S
 	return (await writeTarGz(entries)).buffer as ArrayBuffer;
 }
 
+/**
+ * What the server says about a publish.
+ *
+ * The response used to be read by nobody — upload() returned void and threw
+ * the body away. It matters now: moderation can answer 202 instead of 201,
+ * meaning the package is stored but nobody can see it yet, and the author has
+ * to be told that rather than "Published."
+ */
+export interface PublishResult {
+	id: string;
+	/** 'approved' — live in the catalog. 'pending' — waiting on moderation. */
+	moderationState: 'approved' | 'pending';
+	version: number;
+}
+
 async function upload(
 	archive: ArrayBuffer,
 	filename: string,
 	metadata: PublishMetadata,
 	settings: MarketplaceSettings,
 	packageId?: string,
-): Promise<void> {
+): Promise<PublishResult> {
 	const boundary = randomBoundary();
 	const body = buildMultipartBody(
 		boundary,
@@ -113,7 +128,7 @@ async function upload(
 	// The token goes in a header, never a form field: field values land in
 	// the multipart body unquoted and unescaped, so a secret has no
 	// business being there.
-	await apiRequest(settings, {
+	const response = await apiRequest(settings, {
 		path: '/publish',
 		method: 'POST',
 		contentType: `multipart/form-data; boundary=${boundary}`,
@@ -121,6 +136,22 @@ async function upload(
 		auth: true,
 	});
 
+	// Read defensively: an older worker answers 201 with no moderation field at
+	// all, and that has to keep reading as "published" rather than as a missing
+	// value the UI then treats as pending.
+	let parsed: Record<string, unknown> = {};
+	try {
+		parsed = (JSON.parse(response.text) ?? {}) as Record<string, unknown>;
+	} catch {
+		// A 2xx with a body that will not parse is still a successful publish.
+		// The status is what decides; the body only adds detail.
+	}
+
+	return {
+		id: typeof parsed.id === 'string' ? parsed.id : (packageId ?? ''),
+		moderationState: response.status === 202 || parsed.moderation_state === 'pending' ? 'pending' : 'approved',
+		version: Number(parsed.version) || 1,
+	};
 }
 
 /**
@@ -174,7 +205,10 @@ function buildMultipartBody(
 		encoder.encode(
 			`--${boundary}\r\n` +
 				`Content-Disposition: form-data; name="file"; filename="${safeFilename}"\r\n` +
-				`Content-Type: application/zip\r\n\r\n`,
+				// tar.gz, not ZIP — the declared type has said "zip" since before
+				// writeTarGz replaced the ZIP writer. The server reads the bytes
+				// and ignores this, but a wrong label is a wrong label.
+				`Content-Type: application/gzip\r\n\r\n`,
 		),
 	);
 	parts.push(new Uint8Array(archive));
