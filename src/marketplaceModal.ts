@@ -514,6 +514,12 @@ export class MarketplaceModal extends Modal {
 
 		const detail = this.bodyEl.createDiv({ cls: 'marketplace-detail' });
 		detail.createEl('h3', { text: pkg.title });
+		if (pkg.moderationState !== 'approved') {
+			detail.createEl('p', {
+				text: pkg.moderationState === 'pending' ? 'Waiting for content review. Downloads are unavailable.'
+					: `Rejected: ${pkg.moderationReason || 'Update the package before publishing again.'}`,
+			});
+		}
 
 		const meta = [
 			pkg.author,
@@ -564,6 +570,7 @@ export class MarketplaceModal extends Modal {
 			)
 			.setCta();
 		download.onClick(() => void this.download(pkg, download));
+		download.setDisabled(pkg.moderationState !== 'approved');
 
 		// A UI hint, not a security check — ownership is verified server-side.
 		const mine = Boolean(pkg.authorId) && pkg.authorId === this.plugin.settings.userId;
@@ -582,18 +589,12 @@ export class MarketplaceModal extends Modal {
 				void this.report(pkg);
 			});
 		}
-
-		// The author's own view of a package that did not make it. The reason is
-		// the server's own words, which is the only place they are shown.
-		if (mine && pkg.moderationState === 'rejected' && pkg.moderationReason) {
-			detail.createDiv({ cls: 'marketplace-detail-desc', text: pkg.moderationReason });
-		}
 	}
 
 	/** Sends a report and says what happened. Deliberately undramatic — it opens a review, it does not remove anything. */
 	private async report(pkg: Package) {
 		try {
-			await reportPackage(this.plugin.settings, pkg.id, '');
+			await reportPackage(this.plugin.settings, pkg.id);
 			new Notice('Reported. Someone will look at it.', 8_000);
 		} catch (error) {
 			console.error(error);
@@ -1015,4 +1016,3 @@ function formatDate(iso: string): string {
 	const date = new Date(iso);
 	return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('en-US');
 }
-

@@ -462,7 +462,7 @@ class PublishModal extends Modal {
 			// up under "My packages" in the meantime.
 			if (result.moderationState === 'pending') {
 				new Notice(
-					'Uploaded, and waiting on content review. It appears in the catalog once that finishes — you can see it under "My packages" until then.',
+					'Uploaded and waiting for review. It will appear in the catalog only if approved. Check its status in your package list.',
 					15_000,
 				);
 			} else {

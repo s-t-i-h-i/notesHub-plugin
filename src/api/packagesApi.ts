@@ -1,4 +1,4 @@
-import { apiRequest } from './api';
+import { apiRequest, TOKEN_RE } from './api';
 import type { MarketplaceSettings } from '../settings';
 
 /** A package in the shape the UI expects — fields always exist and have the right type. */
@@ -84,6 +84,7 @@ export async function fetchPackage(
 ): Promise<Package> {
 	const response = await apiRequest(settings, {
 		path: `/packages/${encodeURIComponent(id)}`,
+		auth: TOKEN_RE.test(settings.token.trim()),
 	});
 
 	return toPackage(response.json);
@@ -129,6 +130,7 @@ export async function fetchPackages(
 ): Promise<Package[]> {
 	const response = await apiRequest(settings, {
 		path: '/packages',
+		auth: Boolean(query.authorId) && TOKEN_RE.test(settings.token.trim()),
 		query: {
 			...(query.limit !== undefined ? { limit: String(query.limit) } : {}),
 			...(query.offset !== undefined ? { offset: String(query.offset) } : {}),
@@ -183,12 +185,16 @@ export async function deletePackage(
  * correct it afterwards is part of the design rather than an afterthought. The
  * report opens a review a person reads.
  */
-export async function reportPackage(settings: MarketplaceSettings, id: string, reason: string): Promise<void> {
+export async function reportPackage(settings: MarketplaceSettings, id: string): Promise<void> {
+	// The body carries no reason: nothing in the UI asks for one, and a
+	// parameter only ever passed as '' reads like the reviewer gets something
+	// they never get. The server accepts a `reason` field the day there is a
+	// form to fill it in.
 	await apiRequest(settings, {
 		path: `/report/${encodeURIComponent(id)}`,
 		method: 'POST',
 		contentType: 'application/json',
-		body: JSON.stringify({ reason }),
+		body: '{}',
 		auth: true,
 	});
 }
