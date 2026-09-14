@@ -6,7 +6,7 @@
  *
  * None of that shows up in `tsc` — every one of them is a well-typed string.
  */
-import { MarketplaceModal } from '../src/marketplaceModal';
+import { MarketplaceModal, trackUpload } from '../src/marketplaceModal';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { scrollToBottom, armedObservers } from 'obsidian';
 
@@ -43,13 +43,13 @@ function server(pages: (unknown[] | 'boom')[]) {
 
 const open: any[] = [];
 
-function modal(settings: Record<string, unknown> = {}) {
+function modal(settings: Record<string, unknown> = {}, tab = 'browse') {
 	const plugin: any = {
 		app: { vault: { getAbstractFileByPath: () => null } },
 		settings: { ...DEFAULT_SETTINGS, installs: {}, ...settings },
 		saveSettings: async () => {},
 	};
-	const m: any = new MarketplaceModal(plugin);
+	const m: any = new MarketplaceModal(plugin, tab as any);
 	m.app = plugin.app;
 	m.onOpen();
 	open.push(m);
@@ -263,6 +263,37 @@ console.log('\n--- EMPTY states ---');
 	check('empty search names the tag', m.bodyEl.allText.includes('No packages tagged #ghost'));
 	check('empty search is NOT the generic copy', !m.bodyEl.allText.includes('The library is empty'));
 	check('tabs stay reachable from an empty list', m.bodyEl.findAll('marketplace-tab').length === 3);
+
+	closeAll();
+}
+
+console.log('\n--- MY PACKAGES: an upload shows before the server answers ---');
+{
+	let finish!: () => void;
+	trackUpload({ title: 'Fresh', description: '', tags: [], author: 'me', targetId: '' }, new Promise<void>((resolve) => { finish = resolve; }));
+	trackUpload({ title: 'Old', description: '', tags: [], author: 'me', targetId: 'old' }, new Promise(() => {}));
+
+	const stored = [pkg('new', { title: 'Fresh', moderation_state: 'pending' }), pkg('old')];
+	const s = server([[pkg('old')], stored, stored]);
+	const m = modal({ userId: USER }, 'mine');
+	await settle();
+
+	let cards = m.bodyEl.findAll('marketplace-card');
+	check('opens on My packages', (s.listUrls()[0] ?? '').includes(`author_id=${USER}`));
+	check('placeholder card comes first', cards.length === 2 && cards[0].allText.includes('Fresh'));
+	check('placeholder reads as awaiting review', cards[0].allText.includes('Awaiting review'));
+	check('placeholder has no detail to open', !cards[0].hasClass('mod-clickable'));
+	check('placeholder does not move the offset', m.offset === 1);
+	check('an update marks its existing card', cards[1].allText.includes('Update awaiting review'));
+
+	await m.reload();
+	cards = m.bodyEl.findAll('marketplace-card');
+	check('no duplicate once the server lists the version', cards.filter((c: any) => c.allText.includes('Fresh')).length === 1);
+
+	const before = s.listUrls().length;
+	finish();
+	await settle(); await settle();
+	check('a finished upload refreshes the open list', s.listUrls().length === before + 1);
 
 	closeAll();
 }

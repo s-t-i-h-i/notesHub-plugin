@@ -1,4 +1,4 @@
-import { ButtonComponent, Modal, Notice, Setting, TFile, TFolder } from 'obsidian';
+import { Modal, Notice, Setting, TFile, TFolder } from 'obsidian';
 import MarketplacePlugin from './main';
 import { collectFiles, findBrokenLinks, findNameProblems, type BrokenLink } from './files';
 import { packageScope, publishFolder } from './api/publishApi';
@@ -9,6 +9,7 @@ import { extensionOf, hasExif } from './verify';
 import { isScannable, problemsIn } from './nocode';
 import { formatBytes } from './installs';
 import { renderConfirmRow } from './ui';
+import { openMarketplaceModal, trackUpload } from './marketplaceModal';
 
 type FieldKey = 'title' | 'description';
 
@@ -27,6 +28,15 @@ const MAX_TAGS = 4;
 
 /** How many problems to list before it stops being readable. */
 const MAX_LISTED = 20;
+
+/**
+ * Idempotency keys of publishes the server has not decided, by folder.
+ *
+ * The modal closes as soon as Publish is clicked, so a retry after a lost
+ * response comes from a new modal. Keyed here, it still names the same upload
+ * and gets that upload's answer instead of creating a second version.
+ */
+const undecidedKeys = new Map<string, string>();
 
 /**
  * The tags to pre-select for a package being replaced.
@@ -82,18 +92,15 @@ class PublishModal extends Modal {
 	/** The tag vocabulary, as the server defines it. Empty if the catalog can't be reached. */
 	private vocabulary: string[] = [];
 	private tags: string[] = [];
-	/**
-	 * Names this publish to the server, so a retry after a lost response returns
-	 * the version the first attempt created instead of spending another publication.
-	 * Replaced whenever the server did answer, because the next click is then a new request.
-	 */
-	private idempotencyKey = crypto.randomUUID();
+	/** Names this publish to the server; see undecidedKeys. */
+	private idempotencyKey: string;
 
 	constructor(plugin: MarketplacePlugin, folder: TFolder, files: TFile[]) {
 		super(plugin.app);
 		this.plugin = plugin;
 		this.folder = folder;
 		this.files = files;
+		this.idempotencyKey = undecidedKeys.get(folder.path) ?? crypto.randomUUID();
 		this.values = {
 			title: folder.name,
 			description: '',
@@ -407,7 +414,7 @@ class PublishModal extends Modal {
 			button
 				.setButtonText(this.targetId ? 'Publish update' : 'Publish')
 				.setCta()
-				.onClick(() => void this.publish(button)),
+				.onClick(() => void this.publish()),
 		);
 	}
 
@@ -436,7 +443,15 @@ class PublishModal extends Modal {
 		}
 	}
 
-	private async publish(button: ButtonComponent) {
+	/**
+	 * Closes straight into My packages and uploads behind it.
+	 *
+	 * The response waits on the server's checks, and a modal left on
+	 * "Publishing..." that long also held every hotkey: an open modal owns the
+	 * keyboard in Obsidian. The card shows as pending meanwhile, and the list
+	 * refreshes when the server answers.
+	 */
+	private async publish() {
 		const title = this.values.title.trim();
 
 		if (!title) {
@@ -444,58 +459,52 @@ class PublishModal extends Modal {
 			return;
 		}
 
-		button.setDisabled(true);
-		button.setButtonText('Publishing...');
+		const { folder, plugin, targetId } = this;
+		const metadata = { title, description: this.values.description.trim(), tags: this.tags };
+		const key = this.idempotencyKey;
+		undecidedKeys.set(folder.path, key);
+
+		const done = publishFolder(this.app, folder, this.files, metadata, plugin.settings, targetId || undefined, key);
+		// Before the library opens, so its first load already shows the card.
+		trackUpload({ ...metadata, author: plugin.settings.username, targetId }, done);
+		this.close();
+		openMarketplaceModal(plugin, 'mine');
 
 		try {
-			const result = await publishFolder(
-				this.app,
-				this.folder,
-				this.files,
-				{
-					title,
-					description: this.values.description.trim(),
-					tags: this.tags,
-				},
-				this.plugin.settings,
-				this.targetId || undefined,
-				this.idempotencyKey,
-			);
+			const result = await done;
+			undecidedKeys.delete(folder.path);
 
 			// "Published" would be a lie for a version that is stored but not
 			// visible to anyone. No time is promised: a version automation could
-			// not finish checking waits for a person. It shows up under
-			// "My packages" in the meantime.
+			// not finish checking waits for a person.
 			if (result.moderationState === 'pending') {
 				new Notice(
-					this.targetId
+					targetId
 						? 'Update uploaded and waiting for verification. The published version stays available until it is approved.'
-						: 'Uploaded and waiting for verification. It appears in the catalog only once that finishes. Check its status in your package list.',
+						: 'Uploaded and waiting for verification. It appears in the catalog only once that finishes.',
 					15_000,
 				);
 			} else {
-				new Notice(this.targetId ? 'Update published.' : 'Published.', 10_000);
+				new Notice(targetId ? 'Update published.' : 'Published.', 10_000);
 			}
-
-			this.close();
 		} catch (error) {
 			console.error(error);
-			// The server decided something, so a new click is a new request. No answer,
+			// The server decided something, so the next publish is a new request. No answer,
 			// 429 or 503 decided nothing: those keep the key, so a retry while the first
 			// upload is still running gets that upload's answer instead of a second version.
 			const undecided = !(error instanceof ApiError || error instanceof UnauthorizedError)
 				|| (error instanceof ApiError && (error.status === 429 || error.status === 503));
-			if (!undecided) this.idempotencyKey = crypto.randomUUID();
+			if (!undecided) undecidedKeys.delete(folder.path);
 			// The token may have been revoked between opening the modal and
 			// clicking publish, so point at settings instead of showing a bare "401".
+			// Long-lived: the form is gone, and a refusal can name several files.
 			new Notice(
 				error instanceof UnauthorizedError
 					? 'The server rejected the token. Check the plugin settings.'
 					: 'Publish error: ' +
 							(error instanceof Error ? error.message : String(error)),
+				20_000,
 			);
-			button.setDisabled(false);
-			button.setButtonText(this.targetId ? 'Publish update' : 'Publish');
 		}
 	}
 

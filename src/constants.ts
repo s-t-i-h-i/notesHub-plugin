@@ -24,12 +24,12 @@ export const API_BASE_URL = __API_BASE_URL__;
  * checked here so an oversized package fails before the upload rather than
  * after it, which used to be the only way to find out.
  */
-export const MAX_PUBLISH_BYTES = 10 * 1024 * 1024;
+export const MAX_PUBLISH_BYTES = 25 * 1024 * 1024;
 
 // --- archive limits when downloading ---
 
 /**
- * Max size of the archive itself. The server takes 10 MB now, but packages
+ * Max size of the archive itself. The server takes 25 MB now, but packages
  * published under its earlier 50 MB limit can still be downloaded.
  */
 export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;

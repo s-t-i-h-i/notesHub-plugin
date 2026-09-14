@@ -33,7 +33,7 @@ const SORT_LABELS: Record<SortKey, string> = {
 	title: 'Title A-Z',
 };
 
-type TabKey = 'browse' | 'mine' | 'downloaded';
+export type TabKey = 'browse' | 'mine' | 'downloaded';
 
 const TAB_LABELS: Record<TabKey, string> = {
 	browse: 'Browse',
@@ -47,8 +47,33 @@ const ALL_TAGS = '';
 const PAGE_SIZE = 20;
 
 /** Opens the package library. The server address is baked in at build time, nothing to check here. */
-export function openMarketplaceModal(plugin: MarketplacePlugin): void {
-	new MarketplaceModal(plugin).open();
+export function openMarketplaceModal(plugin: MarketplacePlugin, tab: TabKey = 'browse'): void {
+	new MarketplaceModal(plugin, tab).open();
+}
+
+/** A publish the server has not answered yet. `targetId` is empty for a new package. */
+export interface Upload {
+	title: string;
+	description: string;
+	tags: string[];
+	author: string;
+	targetId: string;
+}
+
+// Module state, not modal state: the upload outlives the publish modal and
+// whichever library modal happens to be open when it finishes.
+const uploads = new Set<Upload>();
+const uploadListeners = new Set<() => void>();
+
+/** Shows `upload` in My packages until `done` settles, then lets open lists refresh. */
+export function trackUpload(upload: Upload, done: Promise<unknown>): void {
+	uploads.add(upload);
+	void done
+		.catch(() => undefined)
+		.finally(() => {
+			uploads.delete(upload);
+			for (const listener of uploadListeners) listener();
+		});
 }
 
 export class MarketplaceModal extends Modal {
@@ -72,10 +97,19 @@ export class MarketplaceModal extends Modal {
 
 	private observer: IntersectionObserver | null = null;
 
-	constructor(plugin: MarketplacePlugin) {
+	/** The list is on screen, so a refresh will not pull the user out of a detail view. */
+	private listing = false;
+
+	/** A finished upload changes what My packages should say about it. */
+	private readonly onUploadDone = () => {
+		if (this.tab === 'mine' && this.listing) void this.reload();
+	};
+
+	constructor(plugin: MarketplacePlugin, tab: TabKey = 'browse') {
 		super(plugin.app);
 		// super() consumes and discards the plugin argument, but settings are needed later for downloads.
 		this.plugin = plugin;
+		this.tab = tab;
 	}
 
 	onOpen() {
@@ -85,11 +119,13 @@ export class MarketplaceModal extends Modal {
 		contentEl.createEl('h2', { text: 'Notes hub' });
 		// A separate container for the content: only this gets re-rendered, the heading stays.
 		this.bodyEl = contentEl.createDiv();
+		uploadListeners.add(this.onUploadDone);
 
 		void this.load();
 	}
 
 	onClose() {
+		uploadListeners.delete(this.onUploadDone);
 		this.observer?.disconnect();
 		this.observer = null;
 		this.contentEl.empty();
@@ -170,6 +206,8 @@ export class MarketplaceModal extends Modal {
 			this.absorb(page);
 			// A short page is the end of the list — there is no total to read.
 			this.exhausted = page.length < PAGE_SIZE;
+			// After absorb(): placeholders are not server rows and must not move the offset.
+			if (reset && this.tab === 'mine') this.packages.unshift(...uploadCards(this.packages, this.tagFilter));
 		} finally {
 			this.loading = false;
 		}
@@ -255,6 +293,7 @@ export class MarketplaceModal extends Modal {
 	 * repeated in each render method — one of them would eventually forget.
 	 */
 	private clearBody() {
+		this.listing = false;
 		this.observer?.disconnect();
 		this.observer = null;
 		this.bodyEl.empty();
@@ -280,6 +319,7 @@ export class MarketplaceModal extends Modal {
 
 	private renderList() {
 		this.clearBody();
+		this.listing = true;
 		this.renderTabs();
 
 		// Downloaded is a local list of tens of items sorted by nothing in
@@ -460,7 +500,8 @@ export class MarketplaceModal extends Modal {
 			.filter((part) => part.length > 0)
 			.join(' · ');
 
-		const card = grid.createDiv({ cls: 'marketplace-card mod-clickable' });
+		// An upload in flight has no id yet, so there is no detail to open.
+		const card = grid.createDiv({ cls: pkg.id ? 'marketplace-card mod-clickable' : 'marketplace-card' });
 		card.createDiv({ cls: 'marketplace-card-title', text: pkg.title });
 		// On the card, not just in the detail view: otherwise an update could
 		// only be found by opening every package in turn. Read straight from
@@ -496,7 +537,7 @@ export class MarketplaceModal extends Modal {
 			card.createDiv({ cls: 'marketplace-card-desc', text: pkg.description });
 		}
 
-		card.addEventListener('click', () => void this.showDetail(pkg));
+		if (pkg.id) card.addEventListener('click', () => void this.showDetail(pkg));
 	}
 
 	// --- detail view ---
@@ -959,6 +1000,50 @@ function recordAsPackage(id: string, record: InstallRecord): Package {
 		updateState: '',
 		updateReason: '',
 	};
+}
+
+/**
+ * Cards for uploads the server has not answered yet.
+ *
+ * The version is stored before the server's checks finish, so it can already
+ * be listed as pending while the response is still on its way. A new package
+ * has no id until then, which leaves the title to match on; showing both would
+ * be one package twice. An update marks its existing card instead.
+ */
+function uploadCards(listed: Package[], tagFilter: string): Package[] {
+	const cards: Package[] = [];
+	for (const upload of uploads) {
+		if (upload.targetId) {
+			const target = listed.find((pkg) => pkg.id === upload.targetId);
+			if (target) target.updateState = 'pending';
+			continue;
+		}
+		if (tagFilter && !upload.tags.includes(tagFilter)) continue;
+		// The server stores titles NFKC-normalised.
+		const title = upload.title.normalize('NFKC');
+		if (listed.some((pkg) => pkg.moderationState === 'pending' && pkg.title === title)) continue;
+
+		cards.push({
+			id: '',
+			title: upload.title,
+			description: upload.description,
+			author: upload.author,
+			authorId: '',
+			tags: upload.tags,
+			filename: '',
+			createdAt: '',
+			version: 1,
+			updatedAt: '',
+			structure: [],
+			sha256: '',
+			revoked: false,
+			moderationState: 'pending',
+			moderationReason: '',
+			updateState: '',
+			updateReason: '',
+		});
+	}
+	return cards;
 }
 
 /**
