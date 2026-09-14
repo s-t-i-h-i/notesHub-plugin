@@ -45,7 +45,8 @@ export interface Hit {
 		| 'link-scheme'        // Dangerous URI schemes (e.g. javascript:, obsidian://)
 		| 'mermaid-click'      // Interactive click callback inside a Mermaid diagram
 		| 'excalidraw'         // Excalidraw drawing containing script metadata
-		| 'canvas-link';       // Obsidian Canvas node embedding an external website
+		| 'canvas-link'        // Obsidian Canvas node embedding an external website
+		| 'svg';               // Inline SVG markup or an SVG data URL
 
 	/** The name of the code fence language (lowercased), only set when kind is 'fence'. */
 	lang?: string;
@@ -89,7 +90,7 @@ interface ContainerPrefix {
 // ============================================================================
 
 /** File extensions checked by the scanner. Images cannot execute, so opening them is unnecessary. */
-const SCANNABLE_EXTENSIONS = ['md', 'canvas', 'svg'];
+const SCANNABLE_EXTENSIONS = ['md', 'canvas'];
 
 /** Maximum number of findings recorded per file to prevent unbounded memory growth. */
 const MAX_HITS_PER_FILE = 500;
@@ -196,6 +197,11 @@ const PROSE: [RegExp, Hit['kind']][] = [
 
 	// Active or embedding HTML tags
 	[/<(script|iframe|object|embed)\b/i, 'html'],
+
+	// SVG is not accepted in any form: as markup, or as a data URL a renderer would
+	// decode into markup. An example inside a fenced block is blanked and passes.
+	[/<svg\b/i, 'svg'],
+	[/data:\s*image\/svg/i, 'svg'],
 
 	// HTML event handlers (e.g. <img onerror="..."), allowing space or slash before `on`
 	[new RegExp(`<[a-z][a-z0-9-]*${ATTRS}[\\s/]on[a-z]+\\s*=`, 'i'), 'html-event'],
@@ -490,7 +496,7 @@ function scanMarkdown(text: string): Hit[] {
 }
 
 // ============================================================================
-// 7. CORE SCANNER: CANVAS & SVG
+// 7. CORE SCANNER: CANVAS
 // ============================================================================
 
 /**
@@ -564,29 +570,10 @@ function scanCanvas(text: string): Hit[] {
 }
 
 /**
- * Scans an SVG file for embedded scripts, event handlers, and dangerous tags.
- */
-function scanSvg(source: string): Hit[] {
-	const text = normalise(source);
-	const hits: Hit[] = [];
-	const starts = lineStarts(text);
-
-	for (const [pattern, kind] of [...RAW, ...PROSE]) {
-		matchAll(text, starts, pattern, kind, hits);
-	}
-
-	return hits.sort((a, b) => a.line - b.line);
-}
-
-/**
  * Dispatches scanning to the appropriate scanner according to file extension.
  */
 export function scanFile(path: string, text: string): Hit[] {
-	const extension = extensionOf(path);
-	if (extension === 'canvas') return scanCanvas(text);
-	if (extension === 'svg') return scanSvg(text);
-
-	return scanMarkdown(text);
+	return extensionOf(path) === 'canvas' ? scanCanvas(text) : scanMarkdown(text);
 }
 
 // ============================================================================
@@ -618,6 +605,8 @@ export function describeHit(hit: Hit): string {
 			return 'Excalidraw drawing';
 		case 'canvas-link':
 			return 'canvas card embedding a remote page';
+		case 'svg':
+			return 'SVG, which packages may not contain';
 		case 'html-event':
 			return 'HTML event handler';
 		default:

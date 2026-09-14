@@ -13,7 +13,7 @@
 export class VerifyError extends Error {}
 
 /** Extensions a package may contain, used when packing and when unpacking alike. */
-export const ALLOWED_EXTENSIONS = ['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+export const ALLOWED_EXTENSIONS = ['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'webp'];
 
 /** Leading bytes that identify each binary format we accept. */
 const SIGNATURES: Record<string, number[][]> = {
@@ -52,6 +52,13 @@ export function extensionOf(path: string): string {
 export function assertContentMatchesExtension(name: string, data: Uint8Array): string | undefined {
 	const extension = extensionOf(name);
 
+	// Its own message: an author exporting diagrams needs to know the format is the
+	// problem, not that the file looked malformed. Renaming it to .png fails the
+	// signature check below.
+	if (extension === 'svg') {
+		throw new VerifyError(`${name} — SVG files are not accepted. Export it as PNG instead.`);
+	}
+
 	if (!ALLOWED_EXTENSIONS.includes(extension)) {
 		throw new VerifyError(`Disallowed file type in archive: ${name}${extension ? ` (.${extension})` : ' (no extension)'}`);
 	}
@@ -77,21 +84,6 @@ export function assertContentMatchesExtension(name: string, data: Uint8Array): s
 			JSON.parse(text);
 		} catch {
 			throw new VerifyError(`${name} is not valid JSON`);
-		}
-	}
-
-	// SVG is only shape-checked: it has to open as an XML or SVG document.
-	//
-	// ponytail: no XML well-formedness check — that needs a parser the Workers
-	// runtime doesn't have, and browsers are lenient anyway, so a strict pass
-	// here would not make our reading and theirs agree. scanSvg() is what
-	// refuses the contents. Upgrade path: a real XML parser, if SVG ever turns
-	// out to be worth one.
-	if (extension === 'svg') {
-		// decodeText() already dropped a BOM: TextDecoder strips it unless ignoreBOM is set.
-		const start = text.trimStart();
-		if (!start.startsWith('<?xml') && !start.startsWith('<svg') && !start.startsWith('<!--') && !start.startsWith('<!DOCTYPE')) {
-			throw new VerifyError(`${name} does not open as an SVG document`);
 		}
 	}
 

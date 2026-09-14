@@ -31,6 +31,8 @@ interface ApiRequest {
 	auth?: boolean;
 	/** Query parameters. Empty values are dropped rather than sent as `key=`. */
 	query?: Record<string, string>;
+	/** Extra request headers. Authorization is set by `auth`, never here. */
+	headers?: Record<string, string>;
 }
 
 /**
@@ -52,7 +54,7 @@ export async function apiRequest(
 	// before this address ever reaches main.js.
 	const apiBaseUrl = assertSafeApiUrl(API_BASE_URL);
 
-	const headers: Record<string, string> = {};
+	const headers: Record<string, string> = { ...req.headers };
 	if (req.auth) {
 		const token = settings.token.trim();
 		// Catch a malformed token locally — no point making a round trip

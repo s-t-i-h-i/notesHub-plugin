@@ -30,7 +30,9 @@ console.log('\n--- refused ---');
 	check('a Meta Bind button', kinds('a.md', '```meta-bind-button\nlabel: Read more\n```').join() === 'fence:meta-bind-button');
 	check('a block nested in an admonition', kinds('a.md', '````ad-note\n```dataviewjs\nx\n```\n````').join() === 'fence:dataviewjs');
 	check('a canvas text node', kinds('a.canvas', JSON.stringify({ nodes: [{ type: 'text', text: '```dataviewjs\nx\n```' }] })).join() === 'fence:dataviewjs');
-	check('a script in an SVG', kinds('a.svg', '<svg><script>alert(1)</script></svg>').join() === 'html');
+	check('SVG inside a note', kinds('a.md', '<svg><rect width="1" height="1"/></svg>').join() === 'svg');
+	check('an SVG data URL', kinds('a.md', '![x](data:image/svg+xml;base64,PHN2Zz4=)').join() === 'svg');
+	check('an SVG file is not a format at all, so it is never scanned', !isScannable('a.svg'));
 }
 
 console.log('\n--- published, and this half is the one that gets forgotten ---');

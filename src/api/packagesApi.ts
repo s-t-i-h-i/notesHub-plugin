@@ -35,6 +35,15 @@ export interface Package {
 	moderationState: 'approved' | 'pending' | 'rejected';
 	/** Why it was refused. Empty unless moderationState is 'rejected'. */
 	moderationReason: string;
+	/**
+	 * Your own newer version that is not public: 'pending' while it is still
+	 * being verified, 'rejected' or 'removed' when it was refused. The published
+	 * version stays in the catalog meanwhile, so without this an author would
+	 * never learn why an update did not appear. Always empty for anyone else.
+	 */
+	updateState: '' | 'pending' | 'rejected' | 'removed';
+	/** Why that version was refused. */
+	updateReason: string;
 }
 
 export async function downloadPackageArchive(
@@ -225,11 +234,17 @@ function toPackage(raw: unknown): Package {
 		// willing to serve.
 		moderationState: toModerationState(row.moderation_state),
 		moderationReason: asText(row.moderation_reason),
+		updateState: toUpdateState(row.update_state),
+		updateReason: asText(row.update_reason),
 	};
 }
 
 function toModerationState(value: unknown): Package['moderationState'] {
 	return value === 'pending' || value === 'rejected' ? value : 'approved';
+}
+
+function toUpdateState(value: unknown): Package['updateState'] {
+	return value === 'pending' || value === 'rejected' || value === 'removed' ? value : '';
 }
 
 /** `structure` arrives as a JSON array of paths, serialized as text. */

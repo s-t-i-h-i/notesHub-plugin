@@ -28,8 +28,19 @@ for (const moderation_state of ['pending', 'rejected', 'approved']) {
 	assert.deepEqual(pkg.structure, ['note.md']);
 }
 body = { id: 'legacy' };
-assert.equal((await fetchPackage(DEFAULT_SETTINGS, 'legacy')).moderationState, 'approved');
+const legacy = await fetchPackage(DEFAULT_SETTINGS, 'legacy');
+assert.equal(legacy.moderationState, 'approved');
+assert.equal(legacy.updateState, '', 'no newer version unless the server says so');
 assert.equal(last.headers.Authorization, undefined);
+
+for (const update_state of ['pending', 'rejected', 'removed']) {
+	body = { id: 'pkg', moderation_state: 'approved', update_state, update_reason: 'refused: file names — hate' };
+	const pkg = await fetchPackage(settings, 'pkg');
+	assert.equal(pkg.updateState, update_state);
+	assert.equal(pkg.updateReason, 'refused: file names — hate');
+}
+body = { id: 'pkg', update_state: 'something-new' };
+assert.equal((await fetchPackage(settings, 'pkg')).updateState, '', 'an unknown state is not shown as a verdict');
 
 body = { ok: true };
 await reportPackage(settings, 'pkg');
@@ -46,8 +57,10 @@ for (const [responseStatus, responseBody, expected] of [
 	[200, { id: 'p', moderation_state: 'pending' }, 'pending'],
 ] as const) {
 	status = responseStatus; body = responseBody;
-	const result = await publishFolder({} as any, folder, [], metadata, settings);
+	const result = await publishFolder({} as any, folder, [], metadata, settings, undefined, 'retry-key-123');
 	assert.equal(result.moderationState, expected);
 	assert.match(new TextDecoder().decode(last.body), /Content-Type: application\/gzip/);
+	assert.equal(last.headers['Idempotency-Key'], 'retry-key-123', 'a retry can be recognised by the server');
+	assert.equal(last.headers.Authorization, `Bearer ${settings.token}`, 'extra headers do not replace the token');
 }
-console.log('ALL OK: moderation states, owner authentication, reports, publish responses and archive MIME');
+console.log('ALL OK: moderation states, update states, owner authentication, reports, publish responses, idempotency and archive MIME');

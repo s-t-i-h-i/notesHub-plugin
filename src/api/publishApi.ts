@@ -44,6 +44,7 @@ export async function publishFolder(
 	metadata: PublishMetadata,
 	settings: MarketplaceSettings,
 	packageId?: string,
+	idempotencyKey?: string,
 ): Promise<PublishResult> {
 	const { prefix, inPackage } = packageScope(folder, files);
 
@@ -63,7 +64,7 @@ export async function publishFolder(
 	// the bytes it actually received. The plugin used to guess at this before
 	// uploading, with a second copy of the analyser; the real answer costs
 	// nothing extra because the response was already coming back.
-	return upload(archive, `${folder.name}.tar.gz`, metadata, settings, packageId);
+	return upload(archive, `${folder.name}.tar.gz`, metadata, settings, packageId, idempotencyKey);
 }
 
 /**
@@ -109,6 +110,7 @@ async function upload(
 	metadata: PublishMetadata,
 	settings: MarketplaceSettings,
 	packageId?: string,
+	idempotencyKey?: string,
 ): Promise<PublishResult> {
 	const boundary = randomBoundary();
 	const body = buildMultipartBody(
@@ -134,6 +136,7 @@ async function upload(
 		contentType: `multipart/form-data; boundary=${boundary}`,
 		body,
 		auth: true,
+		headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
 	});
 
 	// Read defensively: an older worker answers 201 with no moderation field at

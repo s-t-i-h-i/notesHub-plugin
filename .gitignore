@@ -23,5 +23,6 @@ data.json
 
 # Internal working notes - not meant for the public repo
 docs/
+test/
 CLAUDE.md
 AGENTS.md

@@ -483,6 +483,14 @@ export class MarketplaceModal extends Modal {
 		if (pkg.moderationState === 'rejected') {
 			card.createDiv({ cls: 'marketplace-badge mod-muted', text: 'Refused' });
 		}
+		// A newer version of your own that is not public. The published one stays
+		// listed meanwhile, so this is the only place the author sees it.
+		if (pkg.updateState === 'pending') {
+			card.createDiv({ cls: 'marketplace-badge mod-muted', text: 'Update awaiting review' });
+		}
+		if (pkg.updateState === 'rejected' || pkg.updateState === 'removed') {
+			card.createDiv({ cls: 'marketplace-badge mod-muted', text: 'Update refused' });
+		}
 		if (meta) card.createDiv({ cls: 'marketplace-card-meta', text: meta });
 		if (pkg.description) {
 			card.createDiv({ cls: 'marketplace-card-desc', text: pkg.description });
@@ -519,6 +527,13 @@ export class MarketplaceModal extends Modal {
 				text: pkg.moderationState === 'pending' ? 'Waiting for content review. Downloads are unavailable.'
 					: `Rejected: ${pkg.moderationReason || 'Update the package before publishing again.'}`,
 			});
+		}
+		// No promise of when: a version automation could not finish checking waits for a person.
+		if (pkg.updateState === 'pending') {
+			detail.createEl('p', { text: 'Your latest update is still being verified. The version shown here stays available until then.' });
+		}
+		if (pkg.updateState === 'rejected' || pkg.updateState === 'removed') {
+			detail.createEl('p', { text: `Your latest update was refused: ${pkg.updateReason || 'it did not pass content moderation.'}` });
 		}
 
 		const meta = [
@@ -941,6 +956,8 @@ function recordAsPackage(id: string, record: InstallRecord): Package {
 		// the server's copy, which carries the real answer.
 		moderationState: 'approved',
 		moderationReason: '',
+		updateState: '',
+		updateReason: '',
 	};
 }
 

@@ -4,7 +4,7 @@ import { collectFiles, findBrokenLinks, findNameProblems, type BrokenLink } from
 import { packageScope, publishFolder } from './api/publishApi';
 import { needsNormalizing } from './links';
 import { fetchPackages, fetchTags, MAX_IDS_PER_QUERY, type Package } from './api/packagesApi';
-import { UnauthorizedError } from './api/api';
+import { ApiError, UnauthorizedError } from './api/api';
 import { extensionOf, hasExif } from './verify';
 import { isScannable, problemsIn } from './nocode';
 import { formatBytes } from './installs';
@@ -82,6 +82,12 @@ class PublishModal extends Modal {
 	/** The tag vocabulary, as the server defines it. Empty if the catalog can't be reached. */
 	private vocabulary: string[] = [];
 	private tags: string[] = [];
+	/**
+	 * Names this publish to the server, so a retry after a lost response returns
+	 * the version the first attempt created instead of spending another publication.
+	 * Replaced whenever the server did answer, because the next click is then a new request.
+	 */
+	private idempotencyKey = crypto.randomUUID();
 
 	constructor(plugin: MarketplacePlugin, folder: TFolder, files: TFile[]) {
 		super(plugin.app);
@@ -453,16 +459,18 @@ class PublishModal extends Modal {
 				},
 				this.plugin.settings,
 				this.targetId || undefined,
+				this.idempotencyKey,
 			);
 
-			// "Published" would be a lie for a package that is stored but not
-			// visible to anyone. Moderation answers this way when it could not
-			// finish inside the request — rare, and worth saying plainly rather
-			// than leaving the author to wonder where the package went. It shows
-			// up under "My packages" in the meantime.
+			// "Published" would be a lie for a version that is stored but not
+			// visible to anyone. No time is promised: a version automation could
+			// not finish checking waits for a person. It shows up under
+			// "My packages" in the meantime.
 			if (result.moderationState === 'pending') {
 				new Notice(
-					'Uploaded and waiting for review. It will appear in the catalog only if approved. Check its status in your package list.',
+					this.targetId
+						? 'Update uploaded and waiting for verification. The published version stays available until it is approved.'
+						: 'Uploaded and waiting for verification. It appears in the catalog only once that finishes. Check its status in your package list.',
 					15_000,
 				);
 			} else {
@@ -472,6 +480,12 @@ class PublishModal extends Modal {
 			this.close();
 		} catch (error) {
 			console.error(error);
+			// The server decided something, so a new click is a new request. No answer,
+			// 429 or 503 decided nothing: those keep the key, so a retry while the first
+			// upload is still running gets that upload's answer instead of a second version.
+			const undecided = !(error instanceof ApiError || error instanceof UnauthorizedError)
+				|| (error instanceof ApiError && (error.status === 429 || error.status === 503));
+			if (!undecided) this.idempotencyKey = crypto.randomUUID();
 			// The token may have been revoked between opening the modal and
 			// clicking publish, so point at settings instead of showing a bare "401".
 			new Notice(
