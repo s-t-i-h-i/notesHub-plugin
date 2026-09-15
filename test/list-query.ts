@@ -295,6 +295,29 @@ console.log('\n--- MY PACKAGES: an upload shows before the server answers ---');
 	await settle(); await settle();
 	check('a finished upload refreshes the open list', s.listUrls().length === before + 1);
 
+	let finishLater!: () => void;
+	trackUpload({ title: 'Later', description: '', tags: [], author: 'me', targetId: '' }, new Promise<void>((resolve) => { finishLater = resolve; }));
+	await m.reload();
+	m.renderMessage('Loading details...');
+	finishLater();
+	await settle();
+	const hidden = s.listUrls().length;
+	m.renderList();
+	await settle();
+	check('back to the list after an upload finished refreshes it', s.listUrls().length === hidden + 1);
+	check('the finished upload is not painted from the cache', !m.bodyEl.allText.includes('Later'));
+
+	closeAll();
+}
+
+console.log('\n--- MY PACKAGES: token without a stored identity ---');
+{
+	trackUpload({ title: 'Anonymous', description: '', tags: [], author: '', targetId: '' }, new Promise(() => {}));
+	server([[]]);
+	const m = modal({}, 'mine');
+	await settle();
+	check('the upload shows instead of only "Log in"', m.bodyEl.findAll('marketplace-card').some((c: any) => c.allText.includes('Anonymous')));
+
 	closeAll();
 }
 

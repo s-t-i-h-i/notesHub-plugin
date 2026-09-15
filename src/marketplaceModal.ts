@@ -100,9 +100,16 @@ export class MarketplaceModal extends Modal {
 	/** The list is on screen, so a refresh will not pull the user out of a detail view. */
 	private listing = false;
 
+	/** An upload finished while a refresh was not possible; renderList() or loadMore() does it. */
+	private refreshDue = false;
+
 	/** A finished upload changes what My packages should say about it. */
 	private readonly onUploadDone = () => {
-		if (this.tab === 'mine' && this.listing) void this.reload();
+		if (this.tab !== 'mine') return;
+		// Not while a detail view is open, and not mid-page: loadPage() would return
+		// early and the stale list, placeholder included, would be painted again.
+		if (this.listing && !this.loading) void this.reload();
+		else this.refreshDue = true;
 	};
 
 	constructor(plugin: MarketplacePlugin, tab: TabKey = 'browse') {
@@ -149,6 +156,7 @@ export class MarketplaceModal extends Modal {
 
 	/** A tab or filter change is a new first page, not a re-sort of what is on screen. */
 	private async reload() {
+		this.refreshDue = false;
 		this.renderMessage('Loading...');
 
 		try {
@@ -192,6 +200,9 @@ export class MarketplaceModal extends Modal {
 			// and the server would answer with the whole catalog instead.
 			if (this.tab === 'mine' && !this.plugin.settings.userId) {
 				this.exhausted = true;
+				// A pasted token publishes before "Log in" stores the identity, and the
+				// author was sent here right after clicking Publish.
+				if (reset) this.packages.unshift(...uploadCards(this.packages, this.tagFilter));
 				return;
 			}
 
@@ -318,6 +329,11 @@ export class MarketplaceModal extends Modal {
 	// --- list view ---
 
 	private renderList() {
+		// "Back to list" must not repaint cards from before an upload finished.
+		if (this.refreshDue && !this.loading) {
+			void this.reload();
+			return;
+		}
 		this.clearBody();
 		this.listing = true;
 		this.renderTabs();
@@ -482,6 +498,11 @@ export class MarketplaceModal extends Modal {
 			new ButtonComponent(sentinel)
 				.setButtonText('Try again')
 				.onClick(() => this.watch(grid, sentinel));
+			return;
+		}
+
+		if (this.refreshDue) {
+			void this.reload();
 			return;
 		}
 
